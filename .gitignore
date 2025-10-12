@@ -1,0 +1,25 @@
+# env files
+.env
+/HardhatV3/.env
+
+# Node modules
+/HardhatV3/node_modules
+
+# Compilation output
+/HardhatV3/dist
+
+# pnpm deploy output
+/HardhatV3bundle
+
+# Hardhat Build Artifacts
+/HardhatV3/artifacts
+
+# Hardhat compilation (v2) support directory
+/HardhatV3/cache
+
+# Typechain output
+/HardhatV3/types
+
+# Hardhat coverage reports
+/HardhatV3/coverage
+
