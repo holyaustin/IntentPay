@@ -30,31 +30,25 @@ const config: HardhatUserConfig = {
       type: "edr-simulated",
       chainType: "op",
     },
-    sepolia: {
+    baseSepolia: {
       type: "http",
       chainType: "l1",
-      url: configVariable("SEPOLIA_RPC_URL"),
-      accounts: [configVariable("SEPOLIA_PRIVATE_KEY")],
-    },
-    evvmSepolia: {
-      type: "http",
-      chainType: "l1",
-      url: "https://rpc.sepolia-evm.evvm.dev",
-      accounts: [configVariable("SEPOLIA_PRIVATE_KEY")],
+      url: "https://base-sepolia.api.onfinality.io/public", //https://sepolia.base.org/
+      accounts: [configVariable("PRIVATE_KEY")],
     },
     hederaTestnet: {
       type: "http",
       chainType: "l1",
       url: "https://testnet.hashio.io/api",
-      accounts: [configVariable("SEPOLIA_PRIVATE_KEY")],
+      accounts: [configVariable("PRIVATE_KEY")],
     },
     arcologyDevNet: {
             type: "http",
       chainType: "l1",
       url: "https://devnet.arcology.network",
-      accounts: [configVariable("SEPOLIA_PRIVATE_KEY")],
+      accounts: [configVariable("PRIVATE_KEY")],
     },
   },
-};
+}; 
 
 export default config;
