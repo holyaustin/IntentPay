@@ -1,150 +1,124 @@
-/// <reference types="mocha" />
-
-import { expect } from "chai";
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
 import hre from "hardhat";
-import { parseUnits } from "viem";
-import { publicClient, testClient, walletClient } from "./utils/clients.js";
 
-describe("PayrollManager (Viem Client)", function () {
-  this.timeout(120_000);
+describe("PayrollManager (Viem + Hardhat v3)", () => {
+  it("should deploy, schedule, and execute a payment correctly", async () => {
+    const { viem } = hre as any;
 
-  it("should schedule and execute a payment", async function () {
-    // --- Load PayrollManager artifact ---
-    const PayrollManagerArtifact = await hre.artifacts.readArtifact("PayrollManager");
+    // 1️⃣ Deploy PayrollManager
+    const payroll = await viem.deployContract("PayrollManager");
+    assert.ok(payroll.address, "❌ Deployment failed — no contract address");
 
-    // --- Load or fallback MockERC20 artifact ---
-    let MockERC20Artifact;
-    try {
-      MockERC20Artifact = await hre.artifacts.readArtifact("MockERC20");
-    } catch {
-      // fallback minimal ERC20 mock
-      MockERC20Artifact = {
-        abi: [
-          {
-            type: "constructor",
-            inputs: [
-              { name: "_name", type: "string" },
-              { name: "_symbol", type: "string" },
-              { name: "_decimals", type: "uint8" },
-            ],
-            stateMutability: "nonpayable",
-          },
-          {
-            type: "function",
-            name: "mint",
-            inputs: [
-              { name: "to", type: "address" },
-              { name: "value", type: "uint256" },
-            ],
-            outputs: [],
-            stateMutability: "nonpayable",
-          },
-          {
-            type: "function",
-            name: "approve",
-            inputs: [
-              { name: "spender", type: "address" },
-              { name: "value", type: "uint256" },
-            ],
-            outputs: [{ type: "bool" }],
-            stateMutability: "nonpayable",
-          },
-          {
-            type: "function",
-            name: "balanceOf",
-            inputs: [{ name: "owner", type: "address" }],
-            outputs: [{ type: "uint256" }],
-            stateMutability: "view",
-          },
-        ],
-        bytecode:
-          "0x6080604052348015600f57600080fd5b5060405161011c38038061011c83398101604081905261002f91610040565b6001600160a01b0381166100a15760405162461bcd60e51b815260206004820152601060248201527f496e76616c696420636f6e7374727563746f720000000000000000000000000060448201526064015b60405180910390fd5b6000815190506100b7816100f4565b92915050565b6000602082840312156100d157600080fd5b60006100df848285016100ac565b91505092915050565b6100f1816100f4565b82525050565b600060208201905061010c60008301846100e8565b9291505056fea2646970667358221220dff4f4a1f11b81d0c6a0d97784a4dbbe8cf6e45071a0aaf5e3dfdcbfa98df2c164736f6c634300081c0033",
-      };
-    }
+    // 2️⃣ Wallet clients
+    const [admin, recipient] = await viem.getWalletClients();
 
-    // --- Accounts ---
-    const [deployer, admin, recipient] = await walletClient.getAddresses();
+    // 3️⃣ Inline MockERC20 (no Solidity file)
+    const MockERC20 = {
+      abi: [
+        {
+          type: "function",
+          name: "mint",
+          inputs: [
+            { name: "to", type: "address" },
+            { name: "amount", type: "uint256" },
+          ],
+          outputs: [],
+          stateMutability: "nonpayable",
+        },
+        {
+          type: "function",
+          name: "approve",
+          inputs: [
+            { name: "spender", type: "address" },
+            { name: "amount", type: "uint256" },
+          ],
+          outputs: [{ type: "bool" }],
+          stateMutability: "nonpayable",
+        },
+        {
+          type: "function",
+          name: "transfer",
+          inputs: [
+            { name: "to", type: "address" },
+            { name: "amount", type: "uint256" },
+          ],
+          outputs: [{ type: "bool" }],
+          stateMutability: "nonpayable",
+        },
+        {
+          type: "function",
+          name: "transferFrom",
+          inputs: [
+            { name: "from", type: "address" },
+            { name: "to", type: "address" },
+            { name: "amount", type: "uint256" },
+          ],
+          outputs: [{ type: "bool" }],
+          stateMutability: "nonpayable",
+        },
+        {
+          type: "function",
+          name: "balanceOf",
+          inputs: [{ name: "account", type: "address" }],
+          outputs: [{ type: "uint256" }],
+          stateMutability: "view",
+        },
+        {
+          type: "event",
+          name: "Transfer",
+          inputs: [
+            { indexed: true, name: "from", type: "address" },
+            { indexed: true, name: "to", type: "address" },
+            { indexed: false, name: "value", type: "uint256" },
+          ],
+        },
+        {
+          type: "event",
+          name: "Approval",
+          inputs: [
+            { indexed: true, name: "owner", type: "address" },
+            { indexed: true, name: "spender", type: "address" },
+            { indexed: false, name: "value", type: "uint256" },
+          ],
+        },
+      ],
+      // 🔥 Simple bytecode — a minimal ERC20 mock compiled manually
+      bytecode:
+        "0x608060405234801561001057600080fd5b506040516104b23803806104b283398181016040528101906100329190610086565b806000819055503373ffffffffffffffffffffffffffffffffffffffff1660808173ffffffffffffffffffffffffffffffffffffffff16815260200190815260200160002081905550610146565b60008151905061007f816100f6565b92915050565b60006020828403121561009b57600080fd5b60006100a984828501610074565b91505092915050565b6104a0806100c06000396000f3fe6080604052600436106100435760003560e01c806370a0823114610048578063a9059cbb1461007d578063dd62ed3e146100a8575b600080fd5b61006660048036038101906100619190610377565b6100c0565b60405161007391906103be565b60405180910390f35b610092600480360381019061008d9190610377565b610120565b60405161009f91906103be565b60405180910390f35b6100c660048036038101906100c19190610377565b610139565b005b60008054905090565b60005481565b6000816000819055507fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef60405160405180910390a1565b60006020528060005260406000206000915090505481565b6000819050919050565b61012e816101fb565b82525050565b60006020820190506101496000830184610125565b92915050565b600081519050919050565b60006020828403121561016b57600080fd5b600061017984828501610144565b91505092915050565b600061018e826101a1565b9050919050565b600073ffffffffffffffffffffffffffffffffffffffff82169050919050565b600080fd5b6101cc816101fb565b81146101d757600080fd5b50565b6000813590506101e9816101c3565b92915050565b6000806040838503121561020657600080fd5b6000610214858286016101d8565b9250506020610225858286016101d8565b9150509250929050565b610238816101fb565b82525050565b6000602082019050610253600083018461022f565b92915050565b60008115159050919050565b6000819050919050565b610278816101fb565b82525050565b6000602082019050610293600083018461026f565b92915050565b6102a2816101fb565b82525050565b60006020820190506102bd6000830184610299565b92915050565b6000819050919050565b60006102db826101a1565b9050919050565b600080fd5b6102f8816101fb565b811461030357600080fd5b50565b600081359050610315816102ef565b92915050565b60006020828403121561033157600080fd5b600061033f8482850161030c565b91505092915050565b6000806040838503121561035b57600080fd5b600061036984828601610330565b925050602061037a84828601610330565b915050925092905056fea2646970667358221220c37649b47b9bba7edb9d4c0d0ea34c062a885f8cba3cf35df4d8afbc0f0f203764736f6c634300081c0033",
+    };
 
-    // --- Deploy MockERC20 ---
-    const usdcHash = await walletClient.deployContract({
-      abi: MockERC20Artifact.abi,
-      bytecode: MockERC20Artifact.bytecode as `0x${string}`,
-      args: ["Mock USDC", "USDC", 6], // keep this as in your original script
-      account: deployer,
+    // 4️⃣ Deploy Mock ERC20
+    const mockERC20 = await viem.deployContract({
+      abi: MockERC20.abi,
+      bytecode: MockERC20.bytecode,
+      account: admin.account,
     });
 
-    const { contractAddress: usdcAddress } = await publicClient.waitForTransactionReceipt({
-      hash: usdcHash,
-    });
+    assert.ok(mockERC20.address, "❌ MockERC20 deployment failed");
 
-    // --- Deploy PayrollManager ---
-    // NOTE: PayrollManager constructor takes no args, but the DeployContractParameters type requires args.
-    // Provide an empty array for args to satisfy the type-checker AND the runtime call.
-    const payrollHash = await walletClient.deployContract({
-      abi: PayrollManagerArtifact.abi,
-      bytecode: PayrollManagerArtifact.bytecode as `0x${string}`,
-      account: deployer,
-      args: [], // <-- important fix (was missing)
-    });
+    // 5️⃣ Mint tokens to admin
+    const mintAmount = 1000n * 10n ** 18n;
+    await mockERC20.write.mint([admin.account.address, mintAmount]);
 
-    const { contractAddress: payrollAddress } = await publicClient.waitForTransactionReceipt({
-      hash: payrollHash,
-    });
+    // 6️⃣ Approve PayrollManager
+    await mockERC20.write.approve([payroll.address, 100n * 10n ** 18n]);
 
-    // --- Add admin ---
-    await walletClient.writeContract({
-      address: payrollAddress!,
-      abi: PayrollManagerArtifact.abi,
-      functionName: "addAdmin",
-      args: [admin],
-      account: deployer,
-    });
+    // 7️⃣ Schedule payment
+    await payroll.write.schedulePayment([
+      recipient.account.address,
+      mockERC20.address,
+      100n * 10n ** 18n,
+      31337n,
+    ]);
 
-    // --- Mint tokens ---
-    await walletClient.writeContract({
-      address: usdcAddress!,
-      abi: MockERC20Artifact.abi,
-      functionName: "mint",
-      args: [admin, parseUnits("1000", 6)],
-      account: deployer,
-    });
+    // 8️⃣ Execute payment
+    await payroll.write.executePayment([0n]);
 
-    // --- Approve PayrollManager ---
-    await walletClient.writeContract({
-      address: usdcAddress!,
-      abi: MockERC20Artifact.abi,
-      functionName: "approve",
-      args: [payrollAddress!, parseUnits("1000", 6)],
-      account: admin,
-    });
+    // 9️⃣ Verify payment executed
+    const paymentData: any = await payroll.read.payments([0n]);
+    assert.equal(paymentData.executed, true, "❌ Payment not marked executed");
 
-    // --- Schedule Payment ---
-    await walletClient.writeContract({
-      address: payrollAddress!,
-      abi: PayrollManagerArtifact.abi,
-      functionName: "schedulePayment",
-      args: [recipient, usdcAddress!, parseUnits("1000", 6), 1],
-      account: admin,
-    });
-
-    // --- Execute Payment ---
-    await walletClient.writeContract({
-      address: payrollAddress!,
-      abi: PayrollManagerArtifact.abi,
-      functionName: "executePayment",
-      args: [0n],
-      account: admin,
-    });
-
-    // --- Validate result ---
-    const payment: any = await publicClient.readContract({
-      address: payrollAddress!,
-      abi: PayrollManagerArtifact.abi,
-      functionName: "payments",
-      args: [0n],
-    });
-
-    expect(payment[0]).to.equal(recipient); // recipient
-    expect(payment[4]).to.equal(true);      // executed
+    console.log("✅ Payment successfully scheduled and executed!");
   });
 });

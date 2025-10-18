@@ -55,3 +55,25 @@ After setting the variable, you can run the deployment with the Sepolia network:
 ```shell
 npx hardhat ignition deploy --network sepolia ignition/modules/Counter.ts
 ```
+
+🧪 Test
+Run Solidity tests:
+
+
+bash
+npx hardhat test solidity
+Run TypeScript tests:
+
+
+bash
+npx hardhat test nodejs
+🚀 Deploy
+Deploy to EVVM Sepolia:
+
+
+bash
+npx hardhat ignition deploy ignition/modules/PayrollManager.ts --network evvmSepolia
+✅ Verify
+
+bash
+npx hardhat verify --network evvmSepolia <contract-address>
