@@ -69,7 +69,7 @@ describe("PayrollManager (Viem Client)", function () {
     const usdcHash = await walletClient.deployContract({
       abi: MockERC20Artifact.abi,
       bytecode: MockERC20Artifact.bytecode as `0x${string}`,
-      args: ["Mock USDC", "USDC", 6],
+      args: ["Mock USDC", "USDC", 6], // keep this as in your original script
       account: deployer,
     });
 
@@ -78,10 +78,13 @@ describe("PayrollManager (Viem Client)", function () {
     });
 
     // --- Deploy PayrollManager ---
+    // NOTE: PayrollManager constructor takes no args, but the DeployContractParameters type requires args.
+    // Provide an empty array for args to satisfy the type-checker AND the runtime call.
     const payrollHash = await walletClient.deployContract({
       abi: PayrollManagerArtifact.abi,
       bytecode: PayrollManagerArtifact.bytecode as `0x${string}`,
       account: deployer,
+      args: [], // <-- important fix (was missing)
     });
 
     const { contractAddress: payrollAddress } = await publicClient.waitForTransactionReceipt({
