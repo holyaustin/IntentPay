@@ -1,9 +1,13 @@
-import type { HardhatUserConfig } from "hardhat/config";
+// hardhat.config.ts
+import { HardhatUserConfig } from "hardhat/config";
 import hardhatViem from "@nomicfoundation/hardhat-viem";
+//import type { HardhatUserConfig } from "hardhat/config";
 import { configVariable } from "hardhat/config";
+import hardhatNodeTestRunner from "@nomicfoundation/hardhat-node-test-runner";
 
 const config: HardhatUserConfig = {
-  plugins: [hardhatViem],
+  plugins: [hardhatViem,
+  hardhatNodeTestRunner],
   solidity: {
     profiles: {
       default: {
@@ -20,6 +24,7 @@ const config: HardhatUserConfig = {
       },
     },
   },
+
   networks: {
     hardhatMainnet: {
       type: "edr-simulated",
@@ -48,6 +53,7 @@ const config: HardhatUserConfig = {
       accounts: [configVariable("PRIVATE_KEY")],
     },
   },
+
 }; 
 
 export default config;
