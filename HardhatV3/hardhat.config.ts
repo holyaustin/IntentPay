@@ -1,7 +1,7 @@
 // hardhat.config.ts
 import { HardhatUserConfig } from "hardhat/config";
 import hardhatViem from "@nomicfoundation/hardhat-viem";
-//import type { HardhatUserConfig } from "hardhat/config";
+//import "@nomicfoundation/hardhat-toolbox-viem";
 import { configVariable } from "hardhat/config";
 import hardhatNodeTestRunner from "@nomicfoundation/hardhat-node-test-runner";
 
