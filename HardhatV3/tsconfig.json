@@ -10,7 +10,7 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "outDir": "dist",
-    "types": ["node", "hardhat"]
+    "types": ["node", "hardhat", "@nomicfoundation/hardhat-viem"]
   },
   "include": ["hardhat.config.ts", "scripts/**/*.ts", "test/**/*.ts"]
 }
