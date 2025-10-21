@@ -1,96 +1,100 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {PayrollManager} from "./PayrollManager.sol";
-import {Test} from "forge-std/Test.sol";
-import {StdCheats} from "forge-std/StdCheats.sol";
+import "forge-std/Test.sol";
+import "./PayrollManager.sol";
 
-/// @notice Minimal ERC20 mock with mint and transfer logic for Foundry tests
-contract MockERC20 {
-    string public name;
-    string public symbol;
-    uint8 public decimals = 6;
-    uint256 public totalSupply;
-
+contract MockERC20 is Test {
+    string public name = "Mock Token";
+    string public symbol = "MTK";
+    uint8 public decimals = 18;
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
 
     event Transfer(address indexed from, address indexed to, uint256 value);
-    event Approval(address indexed owner, address indexed spender, uint256 value);
 
-    constructor(string memory _name, string memory _symbol) {
-        name = _name;
-        symbol = _symbol;
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+        emit Transfer(address(0), to, amount);
     }
 
-    function mint(address to, uint256 value) public {
-        balanceOf[to] += value;
-        totalSupply += value;
-        emit Transfer(address(0), to, value);
-    }
-
-    function approve(address spender, uint256 value) public returns (bool) {
-        allowance[msg.sender][spender] = value;
-        emit Approval(msg.sender, spender, value);
+    function transfer(address to, uint256 amount) external returns (bool) {
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
+        emit Transfer(msg.sender, to, amount);
         return true;
     }
 
-    function transfer(address to, uint256 value) public returns (bool) {
-        require(balanceOf[msg.sender] >= value, "INSUFFICIENT_BALANCE");
-        balanceOf[msg.sender] -= value;
-        balanceOf[to] += value;
-        emit Transfer(msg.sender, to, value);
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
         return true;
     }
 
-    function transferFrom(address from, address to, uint256 value) public returns (bool) {
-        require(balanceOf[from] >= value, "INSUFFICIENT_BALANCE");
-        require(allowance[from][msg.sender] >= value, "INSUFFICIENT_ALLOWANCE");
-        allowance[from][msg.sender] -= value;
-        balanceOf[from] -= value;
-        balanceOf[to] += value;
-        emit Transfer(from, to, value);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        require(allowance[from][msg.sender] >= amount, "Not allowed");
+        allowance[from][msg.sender] -= amount;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+        emit Transfer(from, to, amount);
         return true;
     }
 }
 
 contract PayrollManagerTest is Test {
-    PayrollManager payroll;
-    MockERC20 usdc;
-    address admin = address(1);
-    address recipient = address(2);
+    PayrollManager manager;
+    MockERC20 token;
+    address admin = address(0xA1);
+    address recipient = address(0xB1);
+    address yieldWallet = address(0xC1);
 
     function setUp() public {
-        payroll = new PayrollManager();
-        usdc = new MockERC20("USDC", "USDC");
-        vm.prank(payroll.owner());
-        payroll.addAdmin(admin);
-        usdc.mint(admin, 1_000_000);
+        manager = new PayrollManager();
+        token = new MockERC20();
+        token.mint(address(this), 1_000_000 ether);
+        token.approve(address(manager), type(uint256).max);
     }
 
-    function test_CanSchedulePayment() public {
-        vm.startPrank(admin);
-        usdc.approve(address(payroll), 1000);
-        payroll.schedulePayment(recipient, address(usdc), 1000, 1);
-        vm.stopPrank();
-
-        (address recipient_, , , , ) = payroll.payments(0);
-        assertEq(recipient_, recipient);
-        assertEq(payroll.totalEscrowed(), 1000);
+    function testAddRemoveAdmin() public {
+        manager.addAdmin(admin);
+        assertTrue(manager.isAdmin(admin));
+        manager.removeAdmin(admin);
+        assertFalse(manager.isAdmin(admin));
     }
 
-    function test_CannotExecuteInvalidPayment() public {
-        vm.startPrank(admin);
-        usdc.approve(address(payroll), 1000);
-        payroll.schedulePayment(recipient, address(usdc), 1000, 1);
-        vm.stopPrank();
+    function testScheduleAndExecutePayment() public {
+        manager.schedulePayment(recipient, address(token), 100 ether, 11155111);
+        assertEq(manager.totalEscrowed(), 100 ether);
+        assertEq(token.balanceOf(address(manager)), 100 ether);
 
-        vm.expectRevert();
-        payroll.executePayment(999);
+        manager.executePayment(0);
+        assertEq(token.balanceOf(recipient), 100 ether);
+        assertEq(manager.totalEscrowed(), 0);
     }
 
-    function test_OnlyAdminCanSchedule() public {
-        vm.expectRevert();
-        payroll.schedulePayment(recipient, address(usdc), 1000, 1);
+    function testPauseAndUnpause() public {
+        manager.pause();
+        vm.expectRevert(bytes("Paused"));
+        manager.schedulePayment(recipient, address(token), 50 ether, 11155111);
+
+        manager.unpause();
+        manager.schedulePayment(recipient, address(token), 50 ether, 11155111);
+    }
+
+    function testManualMoveAndRecallFunds() public {
+        manager.addAdmin(address(this));
+        token.mint(address(manager), 200 ether);
+
+        manager.moveFundsToYield(address(token), yieldWallet, 100 ether, "Send to yield");
+        assertEq(token.balanceOf(yieldWallet), 100 ether);
+
+        token.approve(address(manager), 100 ether);
+        manager.recallFundsFromYield(address(token), 100 ether, "Recall");
+        assertEq(token.balanceOf(address(manager)), 200 ether);
+    }
+
+    function testEmergencyWithdraw() public {
+        token.mint(address(manager), 300 ether);
+        manager.emergencyWithdraw(address(token), admin, 300 ether);
+        assertEq(token.balanceOf(admin), 300 ether);
     }
 }
