@@ -1,120 +1,173 @@
-import hardhat from "hardhat";
+import { network, artifacts } from "hardhat";
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
-describe("PayrollManager (ERC20 + Admin + Yield + Pause)", () => {
+describe("PayrollManager (Viem-native tests)", () => {
   let viem: any;
-  let manager: any;
-  let token: any;
-  let owner: any, user: any, recipient: any, yieldWallet: any;
   let publicClient: any;
+  let owner: any;
+  let user: any;
+  let recipient: any;
+  let yieldWallet: any;
+
+  let payroll: any;
+  let token: any;
 
   beforeEach(async () => {
-    // Connect Hardhat network + viem clients
-    const connection = await hardhat.network.connect();
-    viem = connection.viem;
-    [owner, user, recipient, yieldWallet] = await viem.getWalletClients();
+    // Connect to Hardhat network with viem support
+    const { viem: hhViem } = await network.connect();
+    viem = hhViem;
+
     publicClient = await viem.getPublicClient();
 
-    // Deploy contracts
-    manager = await viem.deployContract("PayrollManager");
-    token = await viem.deployContract("MockERC20", []);
+    // Wallets
+    const wallets = await viem.getWalletClients();
+    [owner, user, recipient, yieldWallet] = wallets;
 
-    // Mint and approve
-    await token.write.mint([user.account.address, 1_000_000n * 10n ** 18n]);
-    await token.connect(user).write.approve([manager.address, 1_000_000n * 10n ** 18n]);
+    // Deploy MockERC20
+    const tokenContract = await viem.deployContract("MockERC20", [], {
+      client: { wallet: owner },
+    });
+    assert.ok(tokenContract.address, "MockERC20 deploy failed");
+    token = tokenContract;
 
-    // Verify deployment
-    assert.ok(manager.address, "❌ PayrollManager deployment failed");
-    assert.ok(token.address, "❌ MockERC20 deployment failed");
+    // Deploy PayrollManager
+    const payrollContract = await viem.deployContract("PayrollManager", [], {
+      client: { wallet: owner },
+    });
+    assert.ok(payrollContract.address, "PayrollManager deploy failed");
+    payroll = payrollContract;
   });
 
-  it("✅ should schedule and execute a payment correctly", async () => {
-    // Schedule a payment
-    const scheduleTx = await manager.connect(user).write.schedulePayment([
-      recipient.account.address,
-      token.address,
-      100n * 10n ** 18n,
-      BigInt(publicClient.chain.id),
-    ]);
-    await publicClient.waitForTransactionReceipt({ hash: scheduleTx });
+  it("schedules and executes a payment correctly", async () => {
+    const mintAmount = 1_000n * 10n ** 18n;
 
-    const escrowed = await manager.read.totalEscrowed();
-    assert.equal(escrowed, 100n * 10n ** 18n, "❌ Escrow not updated");
+    // Mint to user
+    await token.write.mint([user.account.address, mintAmount]);
 
-    // Execute the payment
-    const execTx = await manager.connect(user).write.executePayment([0n]);
-    await publicClient.waitForTransactionReceipt({ hash: execTx });
-
-    const recipientBal = await token.read.balanceOf([recipient.account.address]);
-    assert.equal(recipientBal, 100n * 10n ** 18n, "❌ Recipient not paid");
-  });
-
-  it("✅ should allow admin to pause and unpause the contract", async () => {
-    // Pause the contract
-    await manager.connect(owner).write.pause();
-
-    // Scheduling when paused should revert
-    await assert.rejects(
-      manager.connect(user).write.schedulePayment([
-        recipient.account.address,
-        token.address,
-        50n * 10n ** 18n,
-        BigInt(publicClient.chain.id),
-      ]),
-      /Paused/,
+    // Rebind contracts for each account
+    const tokenAsUser = await viem.getContractAt("MockERC20", token.address, {
+      client: { wallet: user },
+    });
+    const payrollAsUser = await viem.getContractAt(
+      "PayrollManager",
+      payroll.address,
+      { client: { wallet: user } }
     );
 
-    // Unpause and schedule again
-    await manager.connect(owner).write.unpause();
-    const tx = await manager.connect(user).write.schedulePayment([
+    const approveAmount = 200n * 10n ** 18n;
+    await tokenAsUser.write.approve([payroll.address, approveAmount]);
+
+    const chainId = BigInt(await publicClient.getChainId());
+
+    await payrollAsUser.write.schedulePayment([
       recipient.account.address,
       token.address,
-      50n * 10n ** 18n,
-      BigInt(publicClient.chain.id),
+      100n * 10n ** 18n,
+      chainId,
     ]);
-    await publicClient.waitForTransactionReceipt({ hash: tx });
+
+    const escrowed = await payroll.read.totalEscrowed();
+    assert.equal(escrowed, 100n * 10n ** 18n, "escrow mismatch after schedule");
+
+    // Execute the payment
+    await payrollAsUser.write.executePayment([0n]);
+
+    const payment = await payroll.read.payments([0n]);
+    const executed = payment.executed ?? !!payment[4];
+    assert.ok(executed, "Payment not executed");
+
+    const recipientBal = await token.read.balanceOf([recipient.account.address]);
+    assert.equal(recipientBal, 100n * 10n ** 18n);
   });
 
-  it("✅ should allow admin to move and recall yield funds manually", async () => {
-    await manager.connect(owner).write.addAdmin([owner.account.address]);
-    await token.write.mint([manager.address, 200n * 10n ** 18n]);
+  it("pauses/unpauses correctly and blocks scheduling while paused", async () => {
+    const payrollAsOwner = await viem.getContractAt(
+      "PayrollManager",
+      payroll.address,
+      { client: { wallet: owner } }
+    );
+    const payrollAsUser = await viem.getContractAt(
+      "PayrollManager",
+      payroll.address,
+      { client: { wallet: user } }
+    );
 
-    // Move funds to yield
-    const moveTx = await manager.connect(owner).write.moveFundsToYield([
+    await payrollAsOwner.write.pause();
+
+    await assert.rejects(
+      payrollAsUser.write.schedulePayment([
+        recipient.account.address,
+        token.address,
+        10n * 10n ** 18n,
+        BigInt(await publicClient.getChainId()),
+      ]),
+      /paused/i
+    );
+
+    await payrollAsOwner.write.unpause();
+
+    await payrollAsUser.write.schedulePayment([
+      recipient.account.address,
+      token.address,
+      10n * 10n ** 18n,
+      BigInt(await publicClient.getChainId()),
+    ]);
+  });
+
+  it("moves funds to yield wallet and recalls successfully", async () => {
+    const payrollAsOwner = await viem.getContractAt(
+      "PayrollManager",
+      payroll.address,
+      { client: { wallet: owner } }
+    );
+
+    // Mint to contract
+    await token.write.mint([payroll.address, 300n * 10n ** 18n]);
+
+    // Move to yield wallet
+    await payrollAsOwner.write.moveFundsToYield([
       token.address,
       yieldWallet.account.address,
       100n * 10n ** 18n,
-      "Send to yield",
+      "send to yield",
     ]);
-    await publicClient.waitForTransactionReceipt({ hash: moveTx });
 
     const yieldBal = await token.read.balanceOf([yieldWallet.account.address]);
-    assert.equal(yieldBal, 100n * 10n ** 18n, "❌ Yield wallet not credited");
+    assert.equal(yieldBal, 100n * 10n ** 18n);
 
-    // Recall funds back
-    await token.connect(yieldWallet).write.approve([manager.address, 100n * 10n ** 18n]);
-    const recallTx = await manager.connect(owner).write.recallFundsFromYield([
+    // Recall back (approve first)
+    const tokenAsYield = await viem.getContractAt("MockERC20", token.address, {
+      client: { wallet: yieldWallet },
+    });
+    await tokenAsYield.write.approve([payroll.address, 100n * 10n ** 18n]);
+
+    await payrollAsOwner.write.recallFundsFromYield([
       token.address,
       100n * 10n ** 18n,
-      "Recall",
+      "recall",
     ]);
-    await publicClient.waitForTransactionReceipt({ hash: recallTx });
 
-    const finalBal = await token.read.balanceOf([manager.address]);
-    assert.equal(finalBal, 200n * 10n ** 18n, "❌ Recall failed");
+    const contractBal = await token.read.balanceOf([payroll.address]);
+    assert.equal(contractBal, 200n * 10n ** 18n);
   });
 
-  it("✅ should allow only owner to perform emergencyWithdraw", async () => {
-    await token.write.mint([manager.address, 300n * 10n ** 18n]);
-    const withdrawTx = await manager.connect(owner).write.emergencyWithdraw([
-      token.address,
-      yieldWallet.account.address,
-      300n * 10n ** 18n,
-    ]);
-    await publicClient.waitForTransactionReceipt({ hash: withdrawTx });
+  it("allows owner to emergencyWithdraw", async () => {
+    const payrollAsOwner = await viem.getContractAt(
+      "PayrollManager",
+      payroll.address,
+      { client: { wallet: owner } }
+    );
 
-    const yieldBal = await token.read.balanceOf([yieldWallet.account.address]);
-    assert.equal(yieldBal, 300n * 10n ** 18n, "❌ Emergency withdraw failed");
+    await token.write.mint([payroll.address, 400n * 10n ** 18n]);
+
+    await payrollAsOwner.write.emergencyWithdraw([
+      token.address,
+      recipient.account.address,
+      400n * 10n ** 18n,
+    ]);
+
+    const recipientBal = await token.read.balanceOf([recipient.account.address]);
+    assert.equal(recipientBal, 400n * 10n ** 18n);
   });
 });
