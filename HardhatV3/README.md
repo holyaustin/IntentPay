@@ -76,4 +76,6 @@ npx hardhat ignition deploy ignition/modules/PayrollManager.ts --network evvmSep
 ✅ Verify
 
 bash
-npx hardhat verify --network evvmSepolia <contract-address>
+npx hardhat verify --network hederaTestnet 0xa2aea35523a71eff81283e32f52151f12d5cbb7f
+
+PayrollManager deployed at: 0xa2aea35523a71eff81283e32f52151f12d5cbb7f

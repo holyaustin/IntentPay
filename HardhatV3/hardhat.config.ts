@@ -5,9 +5,16 @@ import "@nomicfoundation/hardhat-toolbox-viem";
 import { configVariable } from "hardhat/config";
 import hardhatNodeTestRunner from "@nomicfoundation/hardhat-node-test-runner";
 import hardhatKeystore from "@nomicfoundation/hardhat-keystore";
+import hardhatVerify from "@nomicfoundation/hardhat-verify";
+import 'dotenv/config'
+
+if (!process.env.ETHERSCAN_API_KEY) {
+  console.warn("⚠️  Missing ETHERSCAN_API_KEY in .env");
+}
 
 const config: HardhatUserConfig = {
   plugins: [hardhatViem,
+  hardhatVerify,
   hardhatKeystore, // Add this plugin to your array,
   hardhatNodeTestRunner],
   solidity: {
@@ -45,6 +52,7 @@ const config: HardhatUserConfig = {
     hederaTestnet: {
       type: "http",
       chainType: "l1",
+      chainId: 296, // Hedera Testnet Chain ID
       url: "https://testnet.hashio.io/api",
       accounts: [configVariable("PRIVATE_KEY")],
     },
@@ -54,6 +62,17 @@ const config: HardhatUserConfig = {
       url: "https://devnet.arcology.network",
       accounts: [configVariable("PRIVATE_KEY")],
     },
+  },
+
+verify: {
+  etherscan: {
+    apiKey: process.env.ETHERSCAN_API_KEY
+  },
+
+  blockscout: {
+      enabled: false,
+    },
+  
   },
 
 }; 
