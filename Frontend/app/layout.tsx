@@ -1,20 +1,22 @@
-// app/layout.tsx
 import "./globals.css";
-import { ReactNode } from "react";
-import Header from "../components/Header";
-import Footer from "../components/Footer";
+import Header from "@/components/Header";
+import Footer from "@/components/Footer";
 
 export const metadata = {
-  title: "IntentPay — Cross-Chain Payroll & Yield Engine",
-  description: "No-code cross-chain payroll and yield automation.",
+  title: "IntentPay",
+  description: "Cross-chain payroll and yield engine",
 };
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
     <html lang="en">
-      <body className="min-h-screen flex flex-col">
+      <body className="bg-white text-gray-900 flex flex-col min-h-screen">
         <Header />
-        <main className="flex-1 container mx-auto px-4 py-8">{children}</main>
+        <main className="flex-grow">{children}</main>
         <Footer />
       </body>
     </html>
