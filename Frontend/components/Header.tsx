@@ -49,13 +49,13 @@ export default function Header() {
     <>
       <button
         onClick={() => router.push("/about")}
-        className="hover:text-yellow-300 text-lg transition-colors font-semibold"
+        className="hover:text-yellow-300 text-xl transition-colors font-semibold"
       >
         About
       </button>
       <button
         onClick={() => router.push("/transactions")}
-        className="hover:text-yellow-300 text-lg transition-colors font-semibold"
+        className="hover:text-yellow-300 text-xl transition-colors font-semibold"
       >
         Transactions
       </button>
@@ -65,7 +65,7 @@ export default function Header() {
   return (
     <header className="bg-green-700 text-white shadow-md px-14 sticky top-0 z-50">
       <div className="flex items-center justify-between py-4">
-        {/* Logo */}
+        {/* Logo and Title */}
         <div
           className="flex items-center space-x-3 cursor-pointer"
           onClick={() => router.push("/")}
@@ -73,12 +73,15 @@ export default function Header() {
           <img
             src="/logoyellow.png"
             alt="IntentPay Logo"
-            className="w-28 h-auto object-contain" // rectangular and bigger
+            className="w-28 h-auto object-contain" // rectangular logo
           />
+          <span className="text-2xl font-extrabold tracking-wide text-yellow-300">
+            IntentPay
+          </span>
         </div>
 
-        {/* Desktop nav */}
-        <nav className="hidden md:flex space-x-8">
+        {/* Desktop Nav */}
+        <nav className="hidden md:flex space-x-10">
           <NavLinks />
         </nav>
 
@@ -102,7 +105,7 @@ export default function Header() {
           )}
         </div>
 
-        {/* Mobile toggle */}
+        {/* Mobile Menu Button */}
         <div className="md:hidden">
           <button onClick={() => setMenuOpen(!menuOpen)}>
             {menuOpen ? <X size={26} /> : <Menu size={26} />}
@@ -110,7 +113,7 @@ export default function Header() {
         </div>
       </div>
 
-      {/* Mobile dropdown */}
+      {/* Mobile Dropdown */}
       {menuOpen && (
         <div className="md:hidden bg-green-800 text-white flex flex-col space-y-4 py-4 px-6">
           <NavLinks />

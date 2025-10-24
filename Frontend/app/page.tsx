@@ -38,7 +38,7 @@ export default function HomePage() {
         backgroundPosition: "center",
       }}
     >
-      <h1 className="text-5xl font-bold text-intent-700 max-w-3xl mb-6">
+      <h1 className="text-7xl font-extrabold text-intent-700 max-w-3xl mb-6">
         Welcome to IntentPay
       </h1>
       <p className="text-xl text-gray-800 max-w-2xl mb-8">
@@ -47,7 +47,7 @@ export default function HomePage() {
       <button
         onClick={handleConnect}
         disabled={isConnecting}
-        className="bg-yellow-500 text-black px-8 py-4 rounded-xl font-semibold text-lg hover:bg-yellow-600 transition-colors"
+        className="bg-yellow-300 text-black px-8 py-4 rounded-xl font-semibold text-lg hover:bg-yellow-500 transition-colors"
       >
         {isConnecting ? "Connecting…" : "Connect Wallet"}
       </button>
