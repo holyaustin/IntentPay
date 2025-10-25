@@ -3,8 +3,8 @@ pragma solidity ^0.8.28;
 
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
 
-/// @title PayrollManager (Supports ERC20 & Native Tokens)
-/// @notice Handles payroll scheduling and execution with optional native token support
+/// @title PayrollManager (Supports ERC20 & Native Tokens + Batch scheduling)
+/// @notice Handles payroll scheduling and execution with batch + payer-based restriction
 contract PayrollManager {
     /*//////////////////////////////////////////////////////////////
                                STATE
@@ -24,7 +24,6 @@ contract PayrollManager {
 
     Payment[] public payments;
     uint256 public totalEscrowed;
-
     mapping(address => bool) public isAdmin;
 
     /*//////////////////////////////////////////////////////////////
@@ -32,13 +31,19 @@ contract PayrollManager {
     //////////////////////////////////////////////////////////////*/
 
     event PaymentScheduled(
+        uint256 indexed id,
         address indexed payer,
         address indexed recipient,
         uint256 amount,
-        address indexed token,
+        address token,
         uint256 chainId
     );
-    event PaymentExecuted(uint256 indexed id, address indexed recipient, uint256 amount, address token);
+    event PaymentExecuted(
+        uint256 indexed id,
+        address indexed recipient,
+        uint256 amount,
+        address token
+    );
     event FundsMovedToYield(address indexed token, uint256 amount, string note);
     event FundsRecalledFromYield(address indexed token, uint256 amount, string note);
     event Paused(address indexed by);
@@ -103,62 +108,78 @@ contract PayrollManager {
                               CORE LOGIC
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Schedule a payment (supports ERC20 or native token)
-    /// @dev If _token == address(0), caller must send ETH/HBAR/Native equal to _amount
-    function schedulePayment(
-        address _recipient,
-        address _token,
-        uint256 _amount,
-        uint256 _chainId
+    /// @notice Schedule multiple payments (ERC20 or native). All arrays must match length.
+    /// @dev If token[i] == address(0), msg.value must include the sum of those native amounts.
+    function schedulePayments(
+        address[] calldata _recipients,
+        address[] calldata _tokens,
+        uint256[] calldata _amounts,
+        uint256[] calldata _chainIds
     ) external payable whenNotPaused {
-        require(_recipient != address(0), "Invalid recipient");
-        require(_amount > 0, "Zero amount");
-
-        if (_token == address(0)) {
-            // Native token: require exact msg.value
-            require(msg.value == _amount, "Incorrect native token amount");
-        } else {
-            // ERC20 token payment: transfer tokens into contract
-            IERC20(_token).transferFrom(msg.sender, address(this), _amount);
-        }
-
-        payments.push(
-            Payment({
-                payer: msg.sender,
-                recipient: _recipient,
-                token: _token,
-                amount: _amount,
-                chainId: _chainId,
-                executed: false
-            })
+        uint256 len = _recipients.length;
+        require(
+            len == _tokens.length && len == _amounts.length && len == _chainIds.length,
+            "Array length mismatch"
         );
+        require(len > 0, "No payments");
 
-        unchecked {
-            totalEscrowed += _amount;
+        // Sum native amounts that must be provided with msg.value
+        uint256 nativeSum = 0;
+        for (uint256 i = 0; i < len; i++) {
+            if (_tokens[i] == address(0)) {
+                nativeSum += _amounts[i];
+            }
         }
+        // Validate native value
+        require(msg.value == nativeSum, "Incorrect native token amount");
 
-        emit PaymentScheduled(msg.sender, _recipient, _amount, _token, _chainId);
+        for (uint256 i = 0; i < len; i++) {
+            address token = _tokens[i];
+            uint256 amount = _amounts[i];
+
+            require(_recipients[i] != address(0), "Invalid recipient");
+            require(amount > 0, "Zero amount");
+
+            if (token == address(0)) {
+                // native: the msg.value was already validated and the contract now holds the funds
+                // nothing else needed
+            } else {
+                // ERC20: transfer tokens in from payer
+                IERC20(token).transferFrom(msg.sender, address(this), amount);
+            }
+
+            payments.push(
+                Payment({
+                    payer: msg.sender,
+                    recipient: _recipients[i],
+                    token: token,
+                    amount: amount,
+                    chainId: _chainIds[i],
+                    executed: false
+                })
+            );
+
+            uint256 newId = payments.length - 1;
+            totalEscrowed += amount;
+            emit PaymentScheduled(newId, msg.sender, _recipients[i], amount, token, _chainIds[i]);
+        }
     }
 
-    /// @notice Execute a scheduled payment (anyone can trigger)
+    /// @notice Execute a scheduled payment. ONLY the original payer can execute their own payment.
     function executePayment(uint256 _id) external whenNotPaused {
         require(_id < payments.length, "Invalid ID");
-
         Payment storage p = payments[_id];
         require(!p.executed, "Already executed");
+        require(msg.sender == p.payer, "Only payer can execute");
 
         p.executed = true;
-
-        unchecked {
-            totalEscrowed -= p.amount;
-        }
+        totalEscrowed -= p.amount;
 
         if (p.token == address(0)) {
-            // send native token
+            // native
             (bool success, ) = p.recipient.call{value: p.amount}("");
             require(success, "Native token transfer failed");
         } else {
-            // send ERC20
             IERC20(p.token).transfer(p.recipient, p.amount);
         }
 
@@ -193,8 +214,7 @@ contract PayrollManager {
         emit FundsMovedToYield(_token, _amount, _note);
     }
 
-    /// @notice Admin recalls yield funds back into contract
-    /// @dev For native token recall, admin should send native value equal to _amount
+    /// @notice Admin recalls yield funds back into contract (native recall uses msg.value)
     function recallFundsFromYield(
         address _token,
         uint256 _amount,
@@ -203,7 +223,7 @@ contract PayrollManager {
         require(_amount > 0, "Zero amount");
 
         if (_token == address(0)) {
-            // admin transfers native back via msg.value
+            // admin sends native back via msg.value
             require(msg.value == _amount, "Incorrect native deposit");
         } else {
             IERC20(_token).transferFrom(msg.sender, address(this), _amount);

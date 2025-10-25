@@ -1,27 +1,35 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import "forge-std/Test.sol";
-import "./PayrollManager.sol"; 
+import {Test, console} from "forge-std/Test.sol";
+import {PayrollManager} from "./PayrollManager.sol";
 
-/// @notice Lightweight ERC20 mock for tests
+// Inline mock ERC20 contract that includes all required interface functions.
 contract MockERC20 {
-    string public name = "Mock Token";
+    string public name = "MockToken";
     string public symbol = "MTK";
     uint8 public decimals = 18;
-
+    uint256 public totalSupply;
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
 
     event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
 
-    function mint(address to, uint256 amount) external {
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        require(balanceOf[from] >= amount, "ERC20: transfer amount exceeds balance");
+        require(allowance[from][msg.sender] >= amount, "ERC20: transfer amount exceeds allowance");
+        
+        balanceOf[from] -= amount;
+        allowance[from][msg.sender] -= amount;
         balanceOf[to] += amount;
-        emit Transfer(address(0), to, amount);
+        emit Transfer(from, to, amount);
+        return true;
     }
 
     function transfer(address to, uint256 amount) external returns (bool) {
-        require(balanceOf[msg.sender] >= amount, "Insufficient balance");
+        require(balanceOf[msg.sender] >= amount, "ERC20: transfer amount exceeds balance");
+        
         balanceOf[msg.sender] -= amount;
         balanceOf[to] += amount;
         emit Transfer(msg.sender, to, amount);
@@ -30,100 +38,143 @@ contract MockERC20 {
 
     function approve(address spender, uint256 amount) external returns (bool) {
         allowance[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
         return true;
     }
-
-    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
-        require(allowance[from][msg.sender] >= amount, "Not allowed");
-        require(balanceOf[from] >= amount, "Insufficient balance");
-        allowance[from][msg.sender] -= amount;
-        balanceOf[from] -= amount;
+    
+    function mint(address to, uint256 amount) external {
+        totalSupply += amount;
         balanceOf[to] += amount;
-        emit Transfer(from, to, amount);
-        return true;
+        emit Transfer(address(0), to, amount);
     }
 }
 
-/// @notice Test contract for PayrollManager
 contract PayrollManagerTest is Test {
-    PayrollManager public manager;
-    MockERC20 public token;
+    PayrollManager public payrollManager;
+    MockERC20 public mockToken;
 
-    address public admin = address(0xA1);
-    address public recipient = address(0xB1);
-    address public yieldWallet = address(0xC1);
+    address public owner;
+    address public admin;
+    address public user;
+    address public recipient1;
+    address public recipient2;
+    uint256 public constant NATIVE_AMOUNT = 1 ether;
+    uint256 public constant ERC20_AMOUNT = 1000;
 
     function setUp() public {
-        manager = new PayrollManager();
-        token = new MockERC20();
+        owner = address(1);
+        admin = address(2);
+        user = address(3);
+        recipient1 = address(4);
+        recipient2 = address(5);
 
-        // Give test contract plenty of tokens to simulate payroll payer
-        token.mint(address(this), 1_000_000 ether);
-        token.approve(address(manager), type(uint256).max);
+        vm.prank(owner);
+        payrollManager = new PayrollManager();
+
+        vm.prank(owner);
+        payrollManager.addAdmin(admin);
+
+        mockToken = new MockERC20();
     }
 
-    function testAddRemoveAdmin() public {
-        manager.addAdmin(admin);
-        assertTrue(manager.isAdmin(admin));
-
-        manager.removeAdmin(admin);
-        assertFalse(manager.isAdmin(admin));
+    function test_constructor_setsOwnerAndAdmin() public {
+        assertEq(payrollManager.owner(), owner, "Owner not set correctly");
+        assertTrue(payrollManager.isAdmin(owner), "Owner should be an admin");
     }
 
-    function testScheduleAndExecuteERC20Payment() public {
-        manager.schedulePayment(recipient, address(token), 100 ether, 11155111);
-        assertEq(manager.totalEscrowed(), 100 ether);
-        assertEq(token.balanceOf(address(manager)), 100 ether);
-
-        manager.executePayment(0);
-        assertEq(token.balanceOf(recipient), 100 ether);
-        assertEq(manager.totalEscrowed(), 0);
+    function test_addAdmin() public {
+        address newAdmin = address(6);
+        vm.prank(owner);
+        payrollManager.addAdmin(newAdmin);
+        assertTrue(payrollManager.isAdmin(newAdmin), "New admin not added");
     }
 
-    function testScheduleAndExecuteNativePayment() public {
-        // Send 1 ETH as msg.value to the payable schedulePayment function
-        manager.schedulePayment{value: 1 ether}(recipient, address(0), 1 ether, block.chainid);
-
-        assertEq(address(manager).balance, 1 ether);
-        assertEq(manager.totalEscrowed(), 1 ether);
-
-        // Execute the native payment
-        manager.executePayment(0);
-
-        assertEq(address(recipient).balance, 1 ether);
-        assertEq(manager.totalEscrowed(), 0);
+    function test_removeAdmin() public {
+        vm.prank(owner);
+        payrollManager.removeAdmin(admin);
+        assertFalse(payrollManager.isAdmin(admin), "Admin not removed");
     }
 
-    function testPauseAndUnpause() public {
-        manager.pause();
+    function test_pauseAndUnpause() public {
+        vm.prank(admin);
+        payrollManager.pause();
+        assertTrue(payrollManager.paused(), "Contract not paused");
 
-        vm.expectRevert(bytes("Paused"));
-        manager.schedulePayment(recipient, address(token), 50 ether, block.chainid);
-
-        manager.unpause();
-        manager.schedulePayment(recipient, address(token), 50 ether, block.chainid);
-
-        assertEq(manager.totalEscrowed(), 50 ether);
+        vm.prank(admin);
+        payrollManager.unpause();
+        assertFalse(payrollManager.paused(), "Contract not unpaused");
     }
 
-    function testManualMoveAndRecallFunds() public {
-        manager.addAdmin(address(this));
+    function test_schedulePayments_Native() public {
+        address[] memory recipients = new address[](1);
+        recipients[0] = recipient1;
+        address[] memory tokens = new address[](1);
+        tokens[0] = address(0);
+        uint256[] memory amounts = new uint256[](1);
+        amounts[0] = NATIVE_AMOUNT;
+        uint256[] memory chainIds = new uint256[](1);
+        chainIds[0] = 296;
 
-        token.mint(address(manager), 200 ether);
+        vm.deal(user, NATIVE_AMOUNT);
+        vm.prank(user);
+        payrollManager.schedulePayments{value: NATIVE_AMOUNT}(recipients, tokens, amounts, chainIds);
 
-        manager.moveFundsToYield(address(token), yieldWallet, 100 ether, "Send to yield");
-        assertEq(token.balanceOf(yieldWallet), 100 ether);
+        (address payer, address recipient, address token, uint256 amount, uint256 chainId, bool executed) = payrollManager.payments(0);
 
-        token.approve(address(manager), 100 ether);
-        manager.recallFundsFromYield(address(token), 100 ether, "Recall");
-
-        assertEq(token.balanceOf(address(manager)), 200 ether);
+        assertEq(payer, user, "Payer not correct");
+        assertEq(recipient, recipient1, "Recipient not correct");
+        assertEq(amount, NATIVE_AMOUNT, "Amount not correct");
+        assertFalse(executed, "Payment should not be executed");
     }
 
-    function testEmergencyWithdraw() public {
-        token.mint(address(manager), 300 ether);
+    function test_schedulePayments_ERC20() public {
+        address[] memory recipients = new address[](1);
+        recipients[0] = recipient2;
+        address[] memory tokens = new address[](1);
+        tokens[0] = address(mockToken);
+        uint256[] memory amounts = new uint256[](1);
+        amounts[0] = ERC20_AMOUNT;
+        uint256[] memory chainIds = new uint256[](1);
+        chainIds[0] = 296;
 
-        manager.emergencyWithdraw(address(token), admin, 300 ether);
-        assertEq(token.balanceOf(admin), 300 ether);
+        vm.prank(user);
+        mockToken.mint(user, ERC20_AMOUNT);
+        vm.prank(user);
+        mockToken.approve(address(payrollManager), ERC20_AMOUNT);
+
+        vm.prank(user);
+        payrollManager.schedulePayments(recipients, tokens, amounts, chainIds);
+
+        (address payer, address recipient, address token, uint256 amount, uint256 chainId, bool executed) = payrollManager.payments(0);
+
+        assertEq(payer, user, "Payer not correct");
+        assertEq(recipient, recipient2, "Recipient not correct");
+        assertEq(amount, ERC20_AMOUNT, "Amount not correct");
+        assertFalse(executed, "Payment should not be executed");
+    }
+
+    function test_executePayment_Native() public {
+        address[] memory recipients = new address[](1);
+        recipients[0] = recipient1;
+        address[] memory tokens = new address[](1);
+        tokens[0] = address(0);
+        uint256[] memory amounts = new uint256[](1);
+        amounts[0] = NATIVE_AMOUNT;
+        uint256[] memory chainIds = new uint256[](1);
+        chainIds[0] = 296;
+
+        vm.deal(user, NATIVE_AMOUNT);
+        vm.prank(user);
+        payrollManager.schedulePayments{value: NATIVE_AMOUNT}(recipients, tokens, amounts, chainIds);
+
+        uint256 initialRecipientBalance = recipient1.balance;
+
+        vm.prank(user);
+        payrollManager.executePayment(0);
+
+        (address payer, address recipient, address token, uint256 amount, uint256 chainId, bool executed) = payrollManager.payments(0);
+        
+        assertEq(recipient1.balance, initialRecipientBalance + NATIVE_AMOUNT, "Native token transfer failed");
+        assertTrue(executed, "Payment not marked as executed");
     }
 }

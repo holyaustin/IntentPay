@@ -1,102 +1,138 @@
-// lib/contract.ts
 "use client";
 
-import {
-  BrowserProvider,
-  Contract,
-  parseUnits,
-  formatEther,
-} from "ethers";
-import artifact from "@/lib/artifact.json"; // ✅ compiled PayrollManager artifact
+import { BrowserProvider, Contract, parseUnits, formatUnits } from "ethers";
+import artifact from "@/lib/artifact.json";
 
-// ✅ Updated contract address (Hedera Testnet)
-export const PAYROLL_CONTRACT_ADDRESS =
-  "0xfb69d0fb9c892f3565d66bca92360ca19b8d9780";
+export const PAYROLL_CONTRACT_ADDRESS = "0x7b954082151f7a44b2e42ef9225393ea4f16c482";
 
-// ✅ Get provider from user's browser wallet
+export const TESTNET_TOKENS = {
+  USDC: {
+    name: "USDC (Testnet)",
+    symbol: "USDC",
+    address: "0x00000000000000000000000000000000006cca73",
+    decimals: 6,
+  },
+  DAI: {
+    name: "TEST Protocol (Testnet)",
+    symbol: "TEST",
+    address: "0x00000000000000000000000000000000006cca68",
+    decimals: 18,
+  },
+  WHBAR: {
+    name: "Wrapped HBAR",
+    symbol: "WHBAR",
+    address: "0x00000000000000000000000000000000006cca74",
+    decimals: 8,
+  },
+};
+
 export async function getProvider() {
-  if (typeof window === "undefined" || !window.ethereum) {
+  if (typeof window === "undefined" || !window.ethereum)
     throw new Error("MetaMask not found");
-  }
   return new BrowserProvider(window.ethereum);
 }
 
-// ✅ Get signer for transactions
 export async function getSigner() {
   const provider = await getProvider();
   return await provider.getSigner();
 }
 
-// ✅ Payroll contract (write-enabled)
 export async function getPayrollContract() {
   const signer = await getSigner();
   return new Contract(PAYROLL_CONTRACT_ADDRESS, artifact.abi, signer);
 }
 
-// ✅ Read-only Payroll contract
 export async function getPayrollReadOnly() {
   const provider = await getProvider();
   return new Contract(PAYROLL_CONTRACT_ADDRESS, artifact.abi, provider);
 }
 
-// ✅ ERC20 approval helper
-export async function approveERC20(
-  tokenAddress: string,
-  spender: string,
-  amount: string
+export async function approveERC20(tokenAddress: string, amount: string, decimals = 18) {
+  const signer = await getSigner();
+  const erc20 = new Contract(
+    tokenAddress,
+    ["function approve(address spender, uint256 amount) public returns (bool)"],
+    signer
+  );
+  const tx = await erc20.approve(
+    PAYROLL_CONTRACT_ADDRESS,
+    parseUnits(amount, decimals)
+  );
+  await tx.wait();
+  return tx.hash;
+}
+
+export async function getTokenBalance(tokenAddress: string, wallet: string) {
+  const provider = await getProvider();
+  const erc20 = new Contract(
+    tokenAddress,
+    ["function balanceOf(address) view returns (uint256)"],
+    provider
+  );
+  const bal = await erc20.balanceOf(wallet);
+  return formatUnits(bal, 18);
+}
+
+/**
+ * ✅ Corrected native-value handling and function name
+ */
+export async function scheduleBatchPayments(
+  recipients: string[],
+  tokens: string[],
+  amounts: string[],
+  chainIds: number[],
+  isNative = false
 ) {
   const signer = await getSigner();
-  const erc20Abi = [
-    "function approve(address spender, uint256 amount) public returns (bool)",
-  ];
-  const token = new Contract(tokenAddress, erc20Abi, signer);
-  const tx = await token.approve(spender, parseUnits(amount, 18));
+  const contract = new Contract(PAYROLL_CONTRACT_ADDRESS, artifact.abi, signer);
+
+  // Convert all amounts to BigInt with 18 decimals
+  const parsed = amounts.map((a) => parseUnits(a, 18));
+
+  // Calculate the total msg.value for native token
+  const totalNative = isNative
+    ? parsed.reduce((sum, v) => sum + v, BigInt(0))
+    : BigInt(0);
+
+  const overrides = isNative ? { value: totalNative } : {};
+
+  const tx = await contract.scheduleBatchPayments(
+    recipients,
+    tokens,
+    parsed,
+    chainIds,
+    overrides
+  );
   await tx.wait();
   return tx.hash;
 }
 
-// ✅ ERC20 balance checker
-export async function getTokenBalance(
-  tokenAddress: string,
-  walletAddress: string
-) {
-  const provider = await getProvider();
-  const erc20Abi = [
-    "function balanceOf(address account) external view returns (uint256)",
-  ];
-  const token = new Contract(tokenAddress, erc20Abi, provider);
-  const bal = await token.balanceOf(walletAddress);
-  return formatEther(bal);
-}
+export async function executeAllPayments(paymentCount: number) {
+  const signer = await getSigner();
+  const contract = new Contract(PAYROLL_CONTRACT_ADDRESS, artifact.abi, signer);
 
-// ✅ Schedule Payment (ERC20 or Native)
-export async function schedulePayment(
-  recipient: string,
-  tokenAddress: string | null,
-  amount: string,
-  chainId: number
-) {
-  const contract = await getPayrollContract();
-
-  // ERC20 Payment
-  if (tokenAddress && tokenAddress !== "0x0000000000000000000000000000000000000000") {
-    const tx = await contract.schedulePayment(recipient, tokenAddress, parseUnits(amount, 18), chainId);
-    await tx.wait();
-    return tx.hash;
+  const hashes = [];
+  for (let i = 0; i < paymentCount; i++) {
+    try {
+      const tx = await contract.executePayment(i);
+      await tx.wait();
+      hashes.push(tx.hash);
+    } catch (err: any) {
+      console.warn(`Skipping payment ${i}: ${err.message}`);
+    }
   }
-
-  // Native Payment (ETH, HBAR, etc.)
-  const tx = await contract.schedulePayment(recipient, "0x0000000000000000000000000000000000000000", parseUnits(amount, 18), chainId, {
-    value: parseUnits(amount, 18),
-  });
-  await tx.wait();
-  return tx.hash;
+  return hashes;
 }
 
-// ✅ Execute Payment by ID
-export async function executePayment(paymentId: number) {
-  const contract = await getPayrollContract();
-  const tx = await contract.executePayment(paymentId);
+export async function sendToYield(token: string, amount: string, note = "Yield Deposit") {
+  const signer = await getSigner();
+  const contract = new Contract(PAYROLL_CONTRACT_ADDRESS, artifact.abi, signer);
+  const tx = await contract.moveFundsToYield(
+    token,
+    await signer.getAddress(),
+    parseUnits(amount, 18),
+    note
+  );
   await tx.wait();
   return tx.hash;
 }
