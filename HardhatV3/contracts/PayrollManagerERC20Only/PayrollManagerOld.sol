@@ -3,9 +3,9 @@ pragma solidity ^0.8.28;
 
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
 
-/// @title PayrollManager (Supports ERC20 & Native Tokens)
-/// @notice Handles payroll scheduling and execution with optional native token support
-contract PayrollManager {
+/// @title PayrollManager (Manual Yield-Managed Escrow)
+/// @notice Handles payroll scheduling and execution with manual admin yield management
+contract PayrollManagerOld {
     /*//////////////////////////////////////////////////////////////
                                STATE
     //////////////////////////////////////////////////////////////*/
@@ -16,7 +16,7 @@ contract PayrollManager {
     struct Payment {
         address payer;
         address recipient;
-        address token; // address(0) = native token
+        address token;
         uint256 amount;
         uint256 chainId;
         bool executed;
@@ -31,14 +31,8 @@ contract PayrollManager {
                                 EVENTS
     //////////////////////////////////////////////////////////////*/
 
-    event PaymentScheduled(
-        address indexed payer,
-        address indexed recipient,
-        uint256 amount,
-        address indexed token,
-        uint256 chainId
-    );
-    event PaymentExecuted(uint256 indexed id, address indexed recipient, uint256 amount, address token);
+    event PaymentScheduled(address indexed payer, address indexed recipient, uint256 amount, address indexed token, uint256 chainId);
+    event PaymentExecuted(uint256 indexed id, address indexed recipient, uint256 amount);
     event FundsMovedToYield(address indexed token, uint256 amount, string note);
     event FundsRecalledFromYield(address indexed token, uint256 amount, string note);
     event Paused(address indexed by);
@@ -103,35 +97,27 @@ contract PayrollManager {
                               CORE LOGIC
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Schedule a payment (supports ERC20 or native token)
-    /// @dev If _token == address(0), caller must send ETH/HBAR/Native equal to _amount
+    /// @notice Schedule a payment (anyone can schedule when not paused)
     function schedulePayment(
         address _recipient,
         address _token,
         uint256 _amount,
         uint256 _chainId
-    ) external payable whenNotPaused {
+    ) external whenNotPaused {
         require(_recipient != address(0), "Invalid recipient");
         require(_amount > 0, "Zero amount");
 
-        if (_token == address(0)) {
-            // Native token: require exact msg.value
-            require(msg.value == _amount, "Incorrect native token amount");
-        } else {
-            // ERC20 token payment: transfer tokens into contract
-            IERC20(_token).transferFrom(msg.sender, address(this), _amount);
-        }
+        // Transfer funds from payer to contract
+        IERC20(_token).transferFrom(msg.sender, address(this), _amount);
 
-        payments.push(
-            Payment({
-                payer: msg.sender,
-                recipient: _recipient,
-                token: _token,
-                amount: _amount,
-                chainId: _chainId,
-                executed: false
-            })
-        );
+        payments.push(Payment({
+            payer: msg.sender,
+            recipient: _recipient,
+            token: _token,
+            amount: _amount,
+            chainId: _chainId,
+            executed: false
+        }));
 
         unchecked {
             totalEscrowed += _amount;
@@ -143,7 +129,6 @@ contract PayrollManager {
     /// @notice Execute a scheduled payment (anyone can trigger)
     function executePayment(uint256 _id) external whenNotPaused {
         require(_id < payments.length, "Invalid ID");
-
         Payment storage p = payments[_id];
         require(!p.executed, "Already executed");
 
@@ -153,16 +138,8 @@ contract PayrollManager {
             totalEscrowed -= p.amount;
         }
 
-        if (p.token == address(0)) {
-            // send native token
-            (bool success, ) = p.recipient.call{value: p.amount}("");
-            require(success, "Native token transfer failed");
-        } else {
-            // send ERC20
-            IERC20(p.token).transfer(p.recipient, p.amount);
-        }
-
-        emit PaymentExecuted(_id, p.recipient, p.amount, p.token);
+        IERC20(p.token).transfer(p.recipient, p.amount);
+        emit PaymentExecuted(_id, p.recipient, p.amount);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -175,40 +152,29 @@ contract PayrollManager {
         address _yieldWallet,
         uint256 _amount,
         string calldata _note
-    ) external onlyAdmin whenNotPaused {
+    ) external onlyAdmin {
+        require(!paused, "Paused");
         require(_yieldWallet != address(0), "Invalid wallet");
         require(_amount > 0, "Zero amount");
 
-        if (_token == address(0)) {
-            require(address(this).balance >= _amount, "Insufficient native balance");
-            (bool success, ) = _yieldWallet.call{value: _amount}("");
-            require(success, "Native transfer failed");
-        } else {
-            IERC20 token = IERC20(_token);
-            uint256 bal = token.balanceOf(address(this));
-            require(bal >= _amount, "Insufficient ERC20 balance");
-            token.transfer(_yieldWallet, _amount);
-        }
+        IERC20 token = IERC20(_token);
+        uint256 bal = token.balanceOf(address(this));
+        require(bal >= _amount, "Insufficient balance");
 
+        token.transfer(_yieldWallet, _amount);
         emit FundsMovedToYield(_token, _amount, _note);
     }
 
     /// @notice Admin recalls yield funds back into contract
-    /// @dev For native token recall, admin should send native value equal to _amount
     function recallFundsFromYield(
         address _token,
         uint256 _amount,
         string calldata _note
-    ) external payable onlyAdmin whenNotPaused {
+    ) external onlyAdmin {
+        require(!paused, "Paused");
         require(_amount > 0, "Zero amount");
 
-        if (_token == address(0)) {
-            // admin transfers native back via msg.value
-            require(msg.value == _amount, "Incorrect native deposit");
-        } else {
-            IERC20(_token).transferFrom(msg.sender, address(this), _amount);
-        }
-
+        IERC20(_token).transferFrom(msg.sender, address(this), _amount);
         emit FundsRecalledFromYield(_token, _amount, _note);
     }
 
@@ -222,13 +188,7 @@ contract PayrollManager {
         uint256 _amount
     ) external onlyOwner {
         require(_to != address(0), "Invalid address");
-
-        if (_token == address(0)) {
-            (bool success, ) = _to.call{value: _amount}("");
-            require(success, "Native withdraw failed");
-        } else {
-            IERC20(_token).transfer(_to, _amount);
-        }
+        IERC20(_token).transfer(_to, _amount);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -240,13 +200,6 @@ contract PayrollManager {
     }
 
     function getBalance(address _token) external view returns (uint256) {
-        if (_token == address(0)) {
-            return address(this).balance;
-        } else {
-            return IERC20(_token).balanceOf(address(this));
-        }
+        return IERC20(_token).balanceOf(address(this));
     }
-
-    // Accept plain native transfers
-    receive() external payable {}
 }

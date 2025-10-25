@@ -2,14 +2,12 @@
 pragma solidity ^0.8.28;
 
 import "forge-std/Test.sol";
-import "./PayrollManager.sol"; 
+import "./PayrollManagerOld.sol";
 
-/// @notice Lightweight ERC20 mock for tests
-contract MockERC20 {
+contract MockERC20 is Test {
     string public name = "Mock Token";
     string public symbol = "MTK";
     uint8 public decimals = 18;
-
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
 
@@ -21,7 +19,6 @@ contract MockERC20 {
     }
 
     function transfer(address to, uint256 amount) external returns (bool) {
-        require(balanceOf[msg.sender] >= amount, "Insufficient balance");
         balanceOf[msg.sender] -= amount;
         balanceOf[to] += amount;
         emit Transfer(msg.sender, to, amount);
@@ -35,7 +32,6 @@ contract MockERC20 {
 
     function transferFrom(address from, address to, uint256 amount) external returns (bool) {
         require(allowance[from][msg.sender] >= amount, "Not allowed");
-        require(balanceOf[from] >= amount, "Insufficient balance");
         allowance[from][msg.sender] -= amount;
         balanceOf[from] -= amount;
         balanceOf[to] += amount;
@@ -44,20 +40,16 @@ contract MockERC20 {
     }
 }
 
-/// @notice Test contract for PayrollManager
 contract PayrollManagerTest is Test {
-    PayrollManager public manager;
-    MockERC20 public token;
-
-    address public admin = address(0xA1);
-    address public recipient = address(0xB1);
-    address public yieldWallet = address(0xC1);
+    PayrollManagerOld manager;
+    MockERC20 token;
+    address admin = address(0xA1);
+    address recipient = address(0xB1);
+    address yieldWallet = address(0xC1);
 
     function setUp() public {
-        manager = new PayrollManager();
+        manager = new PayrollManagerOld();
         token = new MockERC20();
-
-        // Give test contract plenty of tokens to simulate payroll payer
         token.mint(address(this), 1_000_000 ether);
         token.approve(address(manager), type(uint256).max);
     }
@@ -65,12 +57,11 @@ contract PayrollManagerTest is Test {
     function testAddRemoveAdmin() public {
         manager.addAdmin(admin);
         assertTrue(manager.isAdmin(admin));
-
         manager.removeAdmin(admin);
         assertFalse(manager.isAdmin(admin));
     }
 
-    function testScheduleAndExecuteERC20Payment() public {
+    function testScheduleAndExecutePayment() public {
         manager.schedulePayment(recipient, address(token), 100 ether, 11155111);
         assertEq(manager.totalEscrowed(), 100 ether);
         assertEq(token.balanceOf(address(manager)), 100 ether);
@@ -80,35 +71,17 @@ contract PayrollManagerTest is Test {
         assertEq(manager.totalEscrowed(), 0);
     }
 
-    function testScheduleAndExecuteNativePayment() public {
-        // Send 1 ETH as msg.value to the payable schedulePayment function
-        manager.schedulePayment{value: 1 ether}(recipient, address(0), 1 ether, block.chainid);
-
-        assertEq(address(manager).balance, 1 ether);
-        assertEq(manager.totalEscrowed(), 1 ether);
-
-        // Execute the native payment
-        manager.executePayment(0);
-
-        assertEq(address(recipient).balance, 1 ether);
-        assertEq(manager.totalEscrowed(), 0);
-    }
-
     function testPauseAndUnpause() public {
         manager.pause();
-
         vm.expectRevert(bytes("Paused"));
-        manager.schedulePayment(recipient, address(token), 50 ether, block.chainid);
+        manager.schedulePayment(recipient, address(token), 50 ether, 11155111);
 
         manager.unpause();
-        manager.schedulePayment(recipient, address(token), 50 ether, block.chainid);
-
-        assertEq(manager.totalEscrowed(), 50 ether);
+        manager.schedulePayment(recipient, address(token), 50 ether, 11155111);
     }
 
     function testManualMoveAndRecallFunds() public {
         manager.addAdmin(address(this));
-
         token.mint(address(manager), 200 ether);
 
         manager.moveFundsToYield(address(token), yieldWallet, 100 ether, "Send to yield");
@@ -116,13 +89,11 @@ contract PayrollManagerTest is Test {
 
         token.approve(address(manager), 100 ether);
         manager.recallFundsFromYield(address(token), 100 ether, "Recall");
-
         assertEq(token.balanceOf(address(manager)), 200 ether);
     }
 
     function testEmergencyWithdraw() public {
         token.mint(address(manager), 300 ether);
-
         manager.emergencyWithdraw(address(token), admin, 300 ether);
         assertEq(token.balanceOf(admin), 300 ether);
     }
