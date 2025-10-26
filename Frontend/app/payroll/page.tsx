@@ -40,21 +40,23 @@ export default function PayrollPage() {
       try {
         const client = new HermesClient("https://hermes.pyth.network", {});
         const priceIds = [
-          // HBAR/USD feed ID from Pyth docs
+          // ✅ Official HBAR/USD feed ID from Pyth docs
           "0x3728e591097635310e6341af53db8b7ee42da9b3a8d918f9463ce9cca886dfbd",
         ];
 
         const priceUpdates = await client.getLatestPriceUpdates(priceIds);
-
         console.log("✅ Pyth priceUpdates:", priceUpdates);
 
-        if (priceUpdates?.parsed?.length > 0) {
-          const entry = priceUpdates.parsed[0];
-          const raw = entry.price.price;
-          const expo = entry.price.expo;
-          const adjusted = raw * Math.pow(10, expo);
+        const parsed = (priceUpdates as any)?.parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const entry = parsed[0];
+          const raw = Number(entry.price.price); // convert bigint → number
+          const expo = Number(entry.price.expo);
 
-          setHbarPrice(`$${adjusted.toFixed(6)} USD / HBAR`);
+          const adjusted = raw * Math.pow(10, expo);
+          const display = adjusted.toFixed(6);
+
+          setHbarPrice(`$${display} USD / HBAR`);
         } else {
           setHbarPrice("Unavailable");
         }
@@ -91,8 +93,7 @@ export default function PayrollPage() {
         if (useNative) {
           const provider = await getProvider();
           const bal = await provider.getBalance(walletAddress);
-          // HBAR has 8 decimals
-          setTokenBalance((Number(bal.toString()) / 1e8).toFixed(4));
+          setTokenBalance((Number(bal.toString()) / 1e8).toFixed(4)); // HBAR = 8 decimals
         } else if (selectedToken) {
           const meta = Object.values(TESTNET_TOKENS).find(
             (t) => t.address.toLowerCase() === selectedToken.toLowerCase()
@@ -275,6 +276,7 @@ export default function PayrollPage() {
         HBAR/USD Price: {hbarPrice}
       </div>
 
+      {/* Steps Indicator */}
       <div className="w-full max-w-3xl bg-white p-4 rounded-xl shadow mb-6">
         <div className="flex items-center justify-between">
           <StepItem i={1} label="Schedule Payment" />
