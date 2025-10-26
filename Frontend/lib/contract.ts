@@ -1,11 +1,12 @@
 // lib/contract.ts
 "use client";
 
-import { BrowserProvider, Contract, parseUnits, formatUnits } from "ethers";
+import { BrowserProvider, Contract, formatUnits, parseUnits } from "ethers";
 import artifact from "@/lib/artifact.json";
 
 export const PAYROLL_CONTRACT_ADDRESS = "0x7b954082151f7a44b2e42ef9225393ea4f16c482";
 
+// ✅ Token metadata for Hedera Testnet
 export const TESTNET_TOKENS = {
   USDC: {
     name: "USDC (Testnet)",
@@ -48,7 +49,7 @@ export async function getPayrollReadOnly() {
   return new Contract(PAYROLL_CONTRACT_ADDRESS, artifact.abi, provider);
 }
 
-// ✅ Approve ERC20 spending
+// ✅ Approve ERC20
 export async function approveERC20(tokenAddress: string, amount: string, decimals = 18) {
   const signer = await getSigner();
   const erc20 = new Contract(
@@ -74,74 +75,107 @@ export async function getTokenBalance(tokenAddress: string, wallet: string, deci
 }
 
 /**
- * ✅ schedulePayments wrapper (Ethers v6-safe)
- * Matches contract signature:
- * schedulePayments(address[] recipients, address[] tokens, uint256[] amounts, uint256[] chainIds)
- *
- * Computes msg.value correctly for native tokens.
+ * ✅ schedulePayments - Correctly handles HBAR (8 decimals) vs ERC20
  */
 export async function schedulePayments(
   recipients: string[],
   tokens: string[],
   amounts: string[],
-  chainIds: number[],
-  isNative = false
+  chainIds: number[]
 ) {
   const signer = await getSigner();
   const contract = new Contract(PAYROLL_CONTRACT_ADDRESS, artifact.abi, signer);
 
-  // Convert each amount to bigint (wei)
-  const parsed = amounts.map((a) => parseUnits(a, 18));
+  const parsedAmounts: bigint[] = [];
+  let totalNative = 0n; // sum of native (HBAR) amounts in tinybars
 
-  // ✅ Compute total native amount (bigint sum)
-  let totalNative = 0n;
-  if (isNative) {
-    for (let i = 0; i < tokens.length; i++) {
-      const t = tokens[i];
-      if (!t || t === "0x0000000000000000000000000000000000000000") {
-        totalNative += parsed[i];
-      }
+  for (let i = 0; i < amounts.length; i++) {
+    const amountStr = amounts[i];
+    const token = tokens[i];
+    const isNative = !token || token === "0x0000000000000000000000000000000000000000";
+
+    let parsed: bigint;
+    let decimals: number;
+
+    if (isNative) {
+      // HBAR uses 8 decimals: convert "1.5" → 150000000
+      decimals = 8;
+      parsed = parseUnits(amountStr, 8);
+      totalNative += parsed;
+    } else {
+      // ERC20: use token-specific decimals
+      const meta = Object.values(TESTNET_TOKENS).find(
+        (t) => t.address.toLowerCase() === token.toLowerCase()
+      );
+      decimals = meta ? meta.decimals : 18;
+      parsed = parseUnits(amountStr, decimals);
     }
+
+    parsedAmounts.push(parsed);
   }
 
-  const overrides = isNative ? { value: totalNative } : {};
+  // Only include { value } if sending native HBAR
+  const txOverrides = totalNative > 0 ? { value: totalNative } : {};
 
-  const tx = await contract.schedulePayments(recipients, tokens, parsed, chainIds, overrides);
+  console.log("📦 Sending schedulePayments", {
+    recipients,
+    tokens,
+    amounts,
+    parsedAmounts,
+    chainIds,
+    value: txOverrides.value?.toString() || "0",
+    formattedValue: totalNative > 0 ? formatUnits(totalNative, 8) + " HBAR" : "0",
+  });
+
+  // ✅ Correct: txOverrides is last argument
+  const tx = await contract.schedulePayments(
+    recipients,
+    tokens,
+    parsedAmounts,
+    chainIds,
+    txOverrides
+  );
+
   await tx.wait();
   return tx.hash;
 }
 
+// ✅ Execute single payment
 export async function executePayment(id: number) {
-  const signer = await getSigner();
-  const contract = new Contract(PAYROLL_CONTRACT_ADDRESS, artifact.abi, signer);
+  const contract = await getPayrollContract();
   const tx = await contract.executePayment(id);
   await tx.wait();
   return tx.hash;
 }
 
+// ✅ Execute all
 export async function executeAllPayments(paymentCount: number) {
-  const signer = await getSigner();
-  const contract = new Contract(PAYROLL_CONTRACT_ADDRESS, artifact.abi, signer);
   const hashes: string[] = [];
   for (let i = 0; i < paymentCount; i++) {
     try {
-      const tx = await contract.executePayment(i);
-      await tx.wait();
-      hashes.push(tx.hash);
+      const tx = await executePayment(i);
+      hashes.push(tx);
     } catch (err: any) {
-      console.warn(`Skipping payment ${i}: ${err.message}`);
+      console.warn(`Failed to execute payment ${i}:`, err.message);
     }
   }
   return hashes;
 }
 
+// ✅ Move to yield
 export async function sendToYield(token: string, amount: string, note = "Yield Deposit") {
   const signer = await getSigner();
   const contract = new Contract(PAYROLL_CONTRACT_ADDRESS, artifact.abi, signer);
+
+  const isNative = token === "0x0000000000000000000000000000000000000000";
+  const decimals = isNative ? 8 : (
+    Object.values(TESTNET_TOKENS).find(t => t.address === token)?.decimals || 18
+  );
+
   const tx = await contract.moveFundsToYield(
     token,
     await signer.getAddress(),
-    parseUnits(amount, 18),
+    parseUnits(amount, decimals),
     note
   );
   await tx.wait();

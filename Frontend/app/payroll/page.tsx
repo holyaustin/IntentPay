@@ -1,4 +1,3 @@
-// app/payroll/page.tsx
 "use client";
 
 import { motion } from "framer-motion";
@@ -15,61 +14,105 @@ import {
   getTokenBalance,
   getPayrollReadOnly,
 } from "@/lib/contract";
+import { HermesClient } from "@pythnetwork/hermes-client";
 
 export default function PayrollPage() {
+  // ---------------- STATE ----------------
   const [step, setStep] = useState(1);
-  const [isNative, setIsNative] = useState(true);
-  const [selectedToken, setSelectedToken] = useState<string>("");
+  const [useNative, setUseNative] = useState(true);
+  const [selectedToken, setSelectedToken] = useState("");
   const [totalAmount, setTotalAmount] = useState("");
   const [recipients, setRecipients] = useState([{ address: "", amount: "" }]);
   const [walletAddress, setWalletAddress] = useState("");
   const [tokenBalance, setTokenBalance] = useState("0");
   const [loading, setLoading] = useState(false);
+  const [hbarPrice, setHbarPrice] = useState<string>("Loading...");
 
-  // sum of recipient amounts (number)
   const totalToDistribute = recipients.reduce(
     (acc, r) => acc + (parseFloat(r.amount || "0") || 0),
     0
   );
-  // remaining is optional UI metric; we don't use it to compute msg.value
   const remaining = parseFloat(totalAmount || "0") - totalToDistribute;
 
-  // load wallet address
+  // ---------------- FETCH HBAR PRICE ----------------
+  useEffect(() => {
+    const fetchPythPrice = async () => {
+      try {
+        const client = new HermesClient("https://hermes.pyth.network", {});
+        const priceIds = [
+          // HBAR/USD feed ID from Pyth docs
+          "0x3728e591097635310e6341af53db8b7ee42da9b3a8d918f9463ce9cca886dfbd",
+        ];
+
+        const priceUpdates = await client.getLatestPriceUpdates(priceIds);
+
+        console.log("✅ Pyth priceUpdates:", priceUpdates);
+
+        if (priceUpdates?.parsed?.length > 0) {
+          const entry = priceUpdates.parsed[0];
+          const raw = entry.price.price;
+          const expo = entry.price.expo;
+          const adjusted = raw * Math.pow(10, expo);
+
+          setHbarPrice(`$${adjusted.toFixed(6)} USD / HBAR`);
+        } else {
+          setHbarPrice("Unavailable");
+        }
+      } catch (err) {
+        console.error("❌ Pyth price fetch failed:", err);
+        setHbarPrice("Unavailable");
+      }
+    };
+
+    fetchPythPrice();
+    const interval = setInterval(fetchPythPrice, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // ---------------- CONNECT WALLET ----------------
   useEffect(() => {
     (async () => {
       try {
         const provider = await getProvider();
         const signer = await provider.getSigner();
         setWalletAddress(await signer.getAddress());
-      } catch {
-        // ignore
+      } catch (err) {
+        console.error("Wallet not found:", err);
+        toast.error("Connect your wallet");
       }
     })();
   }, []);
 
-  // fetch token balance for display
+  // ---------------- FETCH BALANCE ----------------
   useEffect(() => {
     (async () => {
       if (!walletAddress) return;
       try {
-        if (isNative) {
+        if (useNative) {
           const provider = await getProvider();
           const bal = await provider.getBalance(walletAddress);
-          setTokenBalance((Number(bal.toString()) / 1e18).toFixed(4));
+          // HBAR has 8 decimals
+          setTokenBalance((Number(bal.toString()) / 1e8).toFixed(4));
         } else if (selectedToken) {
           const meta = Object.values(TESTNET_TOKENS).find(
             (t) => t.address.toLowerCase() === selectedToken.toLowerCase()
           );
-          const decs = meta ? meta.decimals : 18;
-          const bal = await getTokenBalance(selectedToken, walletAddress, decs);
+          const decimals = meta ? meta.decimals : 18;
+          const bal = await getTokenBalance(
+            selectedToken,
+            walletAddress,
+            decimals
+          );
           setTokenBalance(bal);
         }
-      } catch {
+      } catch (err) {
+        console.error("Balance fetch error:", err);
         setTokenBalance("0");
       }
     })();
-  }, [walletAddress, selectedToken, isNative]);
+  }, [walletAddress, selectedToken, useNative]);
 
+  // ---------------- RECIPIENT HANDLERS ----------------
   const handleAddRecipient = () =>
     setRecipients([...recipients, { address: "", amount: "" }]);
 
@@ -79,155 +122,158 @@ export default function PayrollPage() {
     setRecipients(updated);
   };
 
-  // Helper: compute native total (BigNumber-like via string sum)
-  const computeNativeSum = () => {
-    // sum only recipient amounts (all recipients considered native when isNative=true)
-    // return string value (decimal) e.g. "1.25"
-    const sum = recipients.reduce((acc, r) => acc + (parseFloat(r.amount || "0") || 0), 0);
-    // return as decimal string with up to 18 decimals if needed
-    return sum.toString();
-  };
-
-  // Schedule batch payments
+  // ---------------- SCHEDULE ----------------
   const handleSchedule = async () => {
     try {
-      // local validation
       if (recipients.length === 0) {
-        toast.error("Add at least one recipient", { duration: 8000 });
+        toast.error("Add at least one recipient");
         return;
       }
+
       for (const r of recipients) {
         if (!r.address) {
-          toast.error("Every recipient must have an address", { duration: 8000 });
+          toast.error("Every recipient must have an address");
           return;
         }
-        if (!r.amount || Number(r.amount) <= 0) {
-          toast.error("Every recipient must have amount > 0", { duration: 8000 });
+        if (!r.amount || isNaN(Number(r.amount)) || Number(r.amount) <= 0) {
+          toast.error("Amount must be greater than zero");
           return;
         }
       }
 
-      // prepare arrays
       const recs = recipients.map((r) => r.address);
       const toks = recipients.map(() =>
-        isNative ? "0x0000000000000000000000000000000000000000" : selectedToken
+        useNative
+          ? "0x0000000000000000000000000000000000000000"
+          : selectedToken
       );
       const amts = recipients.map((r) => r.amount);
-      const cids = recipients.map(() => 296);
+      const cids = recipients.map(() => 296); // Hedera testnet = 296
 
-      // If ERC20, approve contract to spend the total sum (respect token decimals)
-      if (!isNative && selectedToken) {
-        // try detect decimals from TESTNET_TOKENS
+      // Approve ERC20 if needed
+      if (!useNative && selectedToken) {
         const meta = Object.values(TESTNET_TOKENS).find(
-          (t) => t.address.toLowerCase() === selectedToken.toLowerCase()
+          (t) => t.address === selectedToken
         );
-        const decimals = meta ? meta.decimals : 18;
-        await approveERC20(selectedToken, amts.reduce((acc, a) => acc + Number(a), 0).toString(), decimals);
+        const decimals = meta?.decimals || 18;
+        const totalERC20 = amts.reduce((acc, a) => acc + Number(a), 0);
+        await approveERC20(selectedToken, totalERC20.toString(), decimals);
       }
 
-      // If native, compute total native sum from recipients and ensure > 0
-      if (isNative) {
-        const nativeTotal = computeNativeSum();
-        if (!nativeTotal || Number(nativeTotal) <= 0) {
-          toast.error("Native total must be > 0", { duration: 8000 });
-          return;
-        }
-        // UI shows toast to user for confirmation
-        toast.loading(`Sending ${nativeTotal} HBAR as msg.value...`, { duration: 8000 });
-      }
+      console.log("🚀 schedulePayments sending:", {
+        recipients: recs,
+        tokens: toks,
+        amounts: amts,
+        chainIds: cids,
+      });
 
       setLoading(true);
-      toast.loading("Scheduling payments (on-chain)...", { duration: 8000 });
-
-      // call helper — helper will compute overrides.value correctly from recipients & tokens
-      await schedulePayments(recs, toks, amts, cids, isNative);
-
-      toast.success("✅ Payments scheduled", { duration: 8000 });
+      toast.loading("Scheduling payments...");
+      await schedulePayments(recs, toks, amts, cids);
+      toast.success("✅ Payments scheduled!");
       setStep(2);
     } catch (err: any) {
-      // show revert reason clearly and keep longer duration
-      const message = err?.data?.message || err?.message || String(err);
-      toast.error(String(message), { duration: 8000 });
+      console.error("Schedule failed:", err);
+      toast.error(err?.reason || err?.message || "Transaction failed");
     } finally {
       setLoading(false);
     }
   };
 
-  // Execute payments
+  // ---------------- EXECUTE ----------------
   const handleExecute = async () => {
     try {
       setLoading(true);
-      toast.loading("Executing payments...", { duration: 8000 });
-
-      // Get payments count for attempts
+      toast.loading("Executing...");
       const readOnly = await getPayrollReadOnly();
-      const countBn = await readOnly.getPaymentsCount();
-      const count = Number(countBn);
-
+      const count = Number(await readOnly.getPaymentsCount());
       if (count === 0) {
-        toast.error("No payments found to execute", { duration: 8000 });
+        toast.error("No payments to execute");
         setLoading(false);
         return;
       }
 
+      console.log("🚀 executeAllPayments with count:", count);
       await executeAllPayments(count);
-
-      toast.success("✅ Payments executed", { duration: 8000 });
+      toast.success("✅ Executed!");
       setStep(3);
     } catch (err: any) {
-      const message = err?.data?.message || err?.message || String(err);
-      toast.error(String(message), { duration: 8000 });
+      toast.error(err?.reason || err?.message || "Execution failed");
     } finally {
       setLoading(false);
     }
   };
 
-  // Deposit remainder to yield vault
+  // ---------------- YIELD ----------------
   const handleYield = async () => {
+    if (remaining <= 0) {
+      toast.error("No balance to deposit");
+      return;
+    }
     try {
-      const nativeTotal = computeNativeSum();
-      // If remaining <=0, show finish
-      const remainingNum = parseFloat(totalAmount || "0") - totalToDistribute;
-      if (remainingNum <= 0) {
-        toast.error("No remaining balance to deposit", { duration: 8000 });
-        return;
-      }
-
       setLoading(true);
-      toast.loading("Depositing to yield...", { duration: 8000 });
-      await sendToYield(isNative ? "0x0000000000000000000000000000000000000000" : selectedToken, remainingNum.toString());
-      toast.success("✅ Deposited to yield", { duration: 8000 });
+      toast.loading("Depositing...");
+      const tokenAddr = useNative
+        ? "0x0000000000000000000000000000000000000000"
+        : selectedToken;
+
+      console.log("🚀 sendToYield:", { tokenAddr, remaining });
+      await sendToYield(tokenAddr, remaining.toString());
+      toast.success("✅ Deposited to yield!");
     } catch (err: any) {
-      const message = err?.data?.message || err?.message || String(err);
-      toast.error(String(message), { duration: 8000 });
+      toast.error(err?.reason || err?.message || "Yield failed");
     } finally {
       setLoading(false);
     }
   };
 
-  const handleBack = () => setStep((s) => Math.max(1, s - 1));
-
-  // Stepper UI (green theme)
+  // ---------------- STEPS ----------------
   const StepItem = ({ i, label }: { i: number; label: string }) => {
-    const idx = i;
-    const active = step === idx;
-    const done = step > idx;
+    const active = step === i;
+    const done = step > i;
     return (
-      <div className="flex items-center cursor-pointer" onClick={() => setStep(idx)}>
+      <div
+        className="flex items-center cursor-pointer"
+        onClick={() => setStep(i)}
+      >
         <div className="flex flex-col items-center mr-4">
-          <div className={`h-10 w-10 rounded-full flex items-center justify-center font-semibold ${done || active ? "bg-green-600 text-white" : "bg-gray-200 text-gray-600"}`}>
-            {done ? <CheckCircle size={16} /> : idx}
+          <div
+            className={`h-10 w-10 rounded-full flex items-center justify-center font-semibold ${
+              done || active
+                ? "bg-green-600 text-white"
+                : "bg-gray-200 text-gray-600"
+            }`}
+          >
+            {done ? <CheckCircle size={16} /> : i}
           </div>
-          <div className={`mt-2 text-sm ${active ? "text-green-600" : "text-gray-700"}`}>{label}</div>
+          <div
+            className={`mt-2 text-sm ${
+              active ? "text-green-600" : "text-gray-700"
+            }`}
+          >
+            {label}
+          </div>
         </div>
-        {i < 3 && <div className={`h-1 w-24 ${done ? "bg-green-600" : "bg-gray-200"} mr-4`} />}
+        {i < 3 && (
+          <div
+            className={`h-1 w-24 ${
+              done ? "bg-green-600" : "bg-gray-200"
+            } mr-4`}
+          />
+        )}
       </div>
     );
   };
 
+  // ---------------- RENDER ----------------
   return (
     <div className="min-h-screen bg-gray-50 p-6 flex flex-col items-center">
-      <h1 className="text-2xl font-semibold mb-6">Payroll</h1>
+      <h1 className="text-2xl font-semibold mb-2">Payroll</h1>
+
+      {/* ✅ HBAR/USD PRICE LABEL */}
+      <div className="mb-6 text-center bg-green-50 border border-green-200 text-green-700 rounded-lg px-4 py-2 font-semibold shadow-sm">
+        HBAR/USD Price: {hbarPrice}
+      </div>
 
       <div className="w-full max-w-3xl bg-white p-4 rounded-xl shadow mb-6">
         <div className="flex items-center justify-between">
@@ -237,22 +283,34 @@ export default function PayrollPage() {
         </div>
       </div>
 
-      {/* Step 1 */}
+      {/* STEP 1 */}
       {step === 1 && (
-        <motion.div key="s1" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="w-full max-w-lg bg-white rounded-xl p-6 shadow">
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="w-full max-w-lg bg-white rounded-xl p-6 shadow"
+        >
           <div className="mb-4">
             <label className="font-medium">Payment Type</label>
-            <select className="w-full p-2 border rounded mt-1" value={isNative ? "native" : "erc20"} onChange={(e) => setIsNative(e.target.value === "native")}>
+            <select
+              className="w-full p-2 border rounded mt-1"
+              value={useNative ? "native" : "erc20"}
+              onChange={(e) => setUseNative(e.target.value === "native")}
+            >
               <option value="native">Native (HBAR)</option>
               <option value="erc20">ERC20 Token</option>
             </select>
           </div>
 
-          {!isNative && (
+          {!useNative && (
             <div className="mb-4">
-              <label className="font-medium">Select ERC20 Token</label>
-              <select className="w-full p-2 border rounded mt-1" value={selectedToken} onChange={(e) => setSelectedToken(e.target.value)}>
-                <option value="">-- Choose Token --</option>
+              <label className="font-medium">Select Token</label>
+              <select
+                className="w-full p-2 border rounded mt-1"
+                value={selectedToken}
+                onChange={(e) => setSelectedToken(e.target.value)}
+              >
+                <option value="">-- Choose --</option>
                 {Object.entries(TESTNET_TOKENS).map(([k, v]) => (
                   <option key={k} value={v.address}>
                     {v.name}
@@ -263,60 +321,126 @@ export default function PayrollPage() {
           )}
 
           <div className="mb-4">
-            <label className="font-medium">Total Amount (optional)</label>
-            <input type="number" placeholder="0.0" className="w-full p-2 border rounded mt-1" value={totalAmount} onChange={(e) => setTotalAmount(e.target.value)} />
-            <p className="text-sm text-gray-600 mt-1">Balance: {tokenBalance} {isNative ? "HBAR" : "TOKEN"}</p>
+            <label className="font-medium">Total Amount</label>
+            <input
+              type="number"
+              placeholder="0.0"
+              className="w-full p-2 border rounded mt-1"
+              value={totalAmount}
+              onChange={(e) => setTotalAmount(e.target.value)}
+            />
+            <p className="text-sm text-gray-600 mt-1">
+              Balance: {tokenBalance} {useNative ? "HBAR" : "TOKEN"}
+            </p>
           </div>
 
           <hr className="my-3" />
 
           {recipients.map((r, idx) => (
             <div key={idx} className="flex gap-2 mb-2">
-              <input placeholder="Recipient Address" value={r.address} onChange={(e) => handleChange(idx, "address", e.target.value)} className="w-2/3 p-2 border rounded" />
-              <input placeholder="Amount" value={r.amount} onChange={(e) => handleChange(idx, "amount", e.target.value)} className="w-1/3 p-2 border rounded" />
+              <input
+                placeholder="Address"
+                value={r.address}
+                onChange={(e) => handleChange(idx, "address", e.target.value)}
+                className="w-2/3 p-2 border rounded"
+              />
+              <input
+                placeholder="Amount"
+                value={r.amount}
+                onChange={(e) => handleChange(idx, "amount", e.target.value)}
+                className="w-1/3 p-2 border rounded"
+              />
             </div>
           ))}
 
-          {/* Smaller but bold Add more recipient button */}
           <div className="flex items-center justify-between mb-4">
-            <button onClick={handleAddRecipient} className="flex items-center gap-2 bg-green-600 text-white px-3 py-2 rounded text-base font-bold hover:bg-green-700">
-              <PlusCircle size={18} /> Add more recipient
+            <button
+              onClick={handleAddRecipient}
+              className="flex items-center gap-2 bg-green-600 text-white px-2 py-1.5 rounded text-sm font-semibold hover:bg-green-700"
+            >
+              <PlusCircle size={16} /> Add Recipient
             </button>
-
-            <div className="text-sm text-gray-600">Total to Distribute: <b>{totalToDistribute}</b></div>
+            <div className="text-sm text-gray-600">
+              Total: <b>{totalToDistribute.toFixed(6)}</b>
+            </div>
           </div>
 
-          <p className="text-sm text-gray-500 mb-4">Remaining: {remaining > 0 ? remaining : 0}</p>
+          <p className="text-sm text-gray-500 mb-4">
+            Remaining: {remaining > 0 ? remaining.toFixed(6) : 0}
+          </p>
 
-          <button disabled={loading} onClick={handleSchedule} className="w-full bg-green-600 text-white px-6 py-2 rounded hover:bg-green-700">{loading ? "Processing..." : "Schedule Payments"}</button>
+          <button
+            disabled={loading}
+            onClick={handleSchedule}
+            className="w-full bg-green-600 text-white px-6 py-2 rounded hover:bg-green-700"
+          >
+            {loading ? "Processing..." : "Schedule Payments"}
+          </button>
         </motion.div>
       )}
 
-      {/* Step 2 */}
+      {/* STEP 2 */}
       {step === 2 && (
-        <motion.div key="s2" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="w-full max-w-lg bg-white rounded-xl p-6 shadow">
-          <h2 className="text-lg font-semibold mb-3">Review Recipients ({recipients.length})</h2>
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="w-full max-w-lg bg-white rounded-xl p-6 shadow"
+        >
+          <h2 className="text-lg font-semibold mb-3">
+            Review ({recipients.length})
+          </h2>
           {recipients.map((r, i) => (
-            <div key={i} className="text-sm text-gray-700 mb-1">• {r.address} → {r.amount}</div>
+            <div key={i} className="text-sm text-gray-700 mb-1">
+              • {r.address} → {r.amount}
+            </div>
           ))}
-
           <div className="flex justify-between mt-6">
-            <button onClick={handleBack} className="bg-gray-200 text-gray-800 px-4 py-2 rounded">Back</button>
-            <button onClick={handleExecute} disabled={loading} className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700">{loading ? "Executing..." : "Execute Payments"}</button>
+            <button
+              onClick={() => setStep(1)}
+              className="bg-gray-200 text-gray-800 px-4 py-2 rounded"
+            >
+              Back
+            </button>
+            <button
+              onClick={handleExecute}
+              disabled={loading}
+              className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700"
+            >
+              {loading ? "Executing..." : "Execute"}
+            </button>
           </div>
         </motion.div>
       )}
 
-      {/* Step 3 */}
+      {/* STEP 3 */}
       {step === 3 && (
-        <motion.div key="s3" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="w-full max-w-lg bg-white rounded-xl p-6 shadow">
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="w-full max-w-lg bg-white rounded-xl p-6 shadow"
+        >
           <h2 className="text-lg font-semibold mb-4">Deposit to Yield</h2>
-          <p className="mb-4 text-sm">Remaining balance: <b>{remaining > 0 ? remaining.toFixed(4) : "0"} {isNative ? "HBAR" : "TOKEN"}</b></p>
-
+          <p className="mb-4 text-sm">
+            Remaining:{" "}
+            <b>
+              {remaining.toFixed(6)} {useNative ? "HBAR" : "TOKEN"}
+            </b>
+          </p>
           {remaining > 0 ? (
-            <button onClick={handleYield} disabled={loading} className="bg-green-600 text-white px-6 py-2 rounded hover:bg-green-700">{loading ? "Sending..." : "Deposit to Yield"}</button>
+            <button
+              onClick={handleYield}
+              disabled={loading}
+              className="bg-green-600 text-white px-6 py-2 rounded hover:bg-green-700"
+            >
+              {loading ? "Sending..." : "Deposit"}
+            </button>
           ) : (
-            <button onClick={() => (window.location.href = "/transactions")} className="bg-green-600 text-white px-6 py-2 rounded hover:bg-green-700">Finish</button>
+            <button
+              onClick={() => (window.location.href = "/")}
+              className="bg-green-600 text-white px-6 py-2 rounded hover:bg-green-700"
+            >
+              Finish
+            </button>
           )}
         </motion.div>
       )}

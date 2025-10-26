@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@pythnetwork/hermes-client": "^2.0.0",
     "@web3-onboard/core": "^2.24.1",
     "@web3-onboard/injected-wallets": "^2.11.3",
     "axios": "^1.12.2",

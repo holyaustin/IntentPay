@@ -20,7 +20,7 @@ export function getOnboard() {
       ],
       appMetadata: {
         name: "IntentPay",
-        icon: "https://via.placeholder.com/64", // ✅ single icon instead of icons[]
+        icon: "https://github.com/holyaustin/IntentPay/blob/main/Frontend/public/favicon.ico", // ✅ single icon instead of icons[]
         description: "Cross-chain payroll + yield automation",
         recommendedInjectedWallets: [
           { name: "MetaMask", url: "https://metamask.io" },

@@ -1,49 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { connectWallet, disconnectWallet, getActiveAccount } from "@/lib/onboard";
+import { useState } from "react";
 import { Menu, X } from "lucide-react";
+import { useWallet } from "@/lib/WalletContext";
 
 export default function Header() {
   const router = useRouter();
-  const [account, setAccount] = useState<string | null>(null);
-  const [label, setLabel] = useState<string | null>(null);
-  const [isConnecting, setIsConnecting] = useState(false);
+  const { account, label, isConnecting, connect, disconnect } = useWallet();
   const [menuOpen, setMenuOpen] = useState(false);
-
-  useEffect(() => {
-    (async () => {
-      const active = await getActiveAccount();
-      if (active?.address) {
-        setAccount(active.address);
-        setLabel(active.label);
-      }
-    })();
-  }, []);
-
-  const handleConnect = async () => {
-    setIsConnecting(true);
-    try {
-      const wallet = await connectWallet();
-      if (wallet?.address) {
-        setAccount(wallet.address);
-        setLabel(wallet.label);
-        router.push("/payroll");
-      }
-    } catch (err) {
-      console.error("Wallet connection failed:", err);
-    } finally {
-      setIsConnecting(false);
-    }
-  };
-
-  const handleDisconnect = async () => {
-    await disconnectWallet();
-    setAccount(null);
-    setLabel(null);
-    router.push("/");
-  };
 
   const NavLinks = () => (
     <>
@@ -73,7 +38,7 @@ export default function Header() {
           <img
             src="/logoyellow.png"
             alt="IntentPay Logo"
-            className="w-28 h-auto object-contain" // rectangular logo
+            className="w-28 h-auto object-contain"
           />
           <span className="text-2xl font-extrabold tracking-wide text-yellow-300">
             IntentPay
@@ -89,14 +54,14 @@ export default function Header() {
         <div className="hidden md:block">
           {account ? (
             <button
-              onClick={handleDisconnect}
+              onClick={disconnect}
               className="bg-yellow-300 hover:bg-yellow-500 text-black px-5 py-2 rounded-lg font-semibold transition-colors"
             >
               {label} — {account.slice(0, 6)}…{account.slice(-4)} (Disconnect)
             </button>
           ) : (
             <button
-              onClick={handleConnect}
+              onClick={connect}
               disabled={isConnecting}
               className="bg-yellow-300 hover:bg-yellow-500 text-black px-5 py-2 rounded-lg font-semibold transition-colors"
             >
@@ -119,14 +84,14 @@ export default function Header() {
           <NavLinks />
           {account ? (
             <button
-              onClick={handleDisconnect}
+              onClick={disconnect}
               className="bg-yellow-300 hover:bg-yellow-500 text-black px-4 py-2 rounded-lg font-semibold"
             >
               Disconnect
             </button>
           ) : (
             <button
-              onClick={handleConnect}
+              onClick={connect}
               disabled={isConnecting}
               className="bg-yellow-300 hover:bg-yellow-500 text-black px-4 py-2 rounded-lg font-semibold"
             >

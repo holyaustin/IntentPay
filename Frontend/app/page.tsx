@@ -31,13 +31,7 @@ export default function HomePage() {
 
   return (
     <div
-      className="min-h-screen flex flex-col items-center justify-center px-6 text-center"
-      style={{
-        backgroundImage: "url('/your-background-image.jpg')",
-        backgroundSize: "cover",
-        backgroundPosition: "center",
-      }}
-    >
+      className="min-h-screen flex flex-col items-center justify-center px-6 text-center">
       <h1 className="text-7xl font-extrabold text-intent-700 max-w-3xl mb-6">
         Welcome to IntentPay
       </h1>
@@ -49,7 +43,7 @@ export default function HomePage() {
         disabled={isConnecting}
         className="bg-yellow-300 text-black px-8 py-4 rounded-xl font-semibold text-lg hover:bg-yellow-500 transition-colors"
       >
-        {isConnecting ? "Connecting…" : "Connect Wallet"}
+        {isConnecting ? "Connecting…" : "Schedule Pay"}
       </button>
     </div>
   );
