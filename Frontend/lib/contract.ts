@@ -1,3 +1,4 @@
+// lib/contract.ts
 "use client";
 
 import { BrowserProvider, Contract, parseUnits, formatUnits } from "ethers";
@@ -47,6 +48,7 @@ export async function getPayrollReadOnly() {
   return new Contract(PAYROLL_CONTRACT_ADDRESS, artifact.abi, provider);
 }
 
+// ✅ Approve ERC20 spending
 export async function approveERC20(tokenAddress: string, amount: string, decimals = 18) {
   const signer = await getSigner();
   const erc20 = new Contract(
@@ -54,15 +56,13 @@ export async function approveERC20(tokenAddress: string, amount: string, decimal
     ["function approve(address spender, uint256 amount) public returns (bool)"],
     signer
   );
-  const tx = await erc20.approve(
-    PAYROLL_CONTRACT_ADDRESS,
-    parseUnits(amount, decimals)
-  );
+  const tx = await erc20.approve(PAYROLL_CONTRACT_ADDRESS, parseUnits(amount, decimals));
   await tx.wait();
   return tx.hash;
 }
 
-export async function getTokenBalance(tokenAddress: string, wallet: string) {
+// ✅ Get ERC20 balance
+export async function getTokenBalance(tokenAddress: string, wallet: string, decimals = 18) {
   const provider = await getProvider();
   const erc20 = new Contract(
     tokenAddress,
@@ -70,13 +70,17 @@ export async function getTokenBalance(tokenAddress: string, wallet: string) {
     provider
   );
   const bal = await erc20.balanceOf(wallet);
-  return formatUnits(bal, 18);
+  return formatUnits(bal, decimals);
 }
 
 /**
- * ✅ Corrected native-value handling and function name
+ * ✅ schedulePayments wrapper (Ethers v6-safe)
+ * Matches contract signature:
+ * schedulePayments(address[] recipients, address[] tokens, uint256[] amounts, uint256[] chainIds)
+ *
+ * Computes msg.value correctly for native tokens.
  */
-export async function scheduleBatchPayments(
+export async function schedulePayments(
   recipients: string[],
   tokens: string[],
   amounts: string[],
@@ -86,23 +90,31 @@ export async function scheduleBatchPayments(
   const signer = await getSigner();
   const contract = new Contract(PAYROLL_CONTRACT_ADDRESS, artifact.abi, signer);
 
-  // Convert all amounts to BigInt with 18 decimals
+  // Convert each amount to bigint (wei)
   const parsed = amounts.map((a) => parseUnits(a, 18));
 
-  // Calculate the total msg.value for native token
-  const totalNative = isNative
-    ? parsed.reduce((sum, v) => sum + v, BigInt(0))
-    : BigInt(0);
+  // ✅ Compute total native amount (bigint sum)
+  let totalNative = 0n;
+  if (isNative) {
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i];
+      if (!t || t === "0x0000000000000000000000000000000000000000") {
+        totalNative += parsed[i];
+      }
+    }
+  }
 
   const overrides = isNative ? { value: totalNative } : {};
 
-  const tx = await contract.scheduleBatchPayments(
-    recipients,
-    tokens,
-    parsed,
-    chainIds,
-    overrides
-  );
+  const tx = await contract.schedulePayments(recipients, tokens, parsed, chainIds, overrides);
+  await tx.wait();
+  return tx.hash;
+}
+
+export async function executePayment(id: number) {
+  const signer = await getSigner();
+  const contract = new Contract(PAYROLL_CONTRACT_ADDRESS, artifact.abi, signer);
+  const tx = await contract.executePayment(id);
   await tx.wait();
   return tx.hash;
 }
@@ -110,8 +122,7 @@ export async function scheduleBatchPayments(
 export async function executeAllPayments(paymentCount: number) {
   const signer = await getSigner();
   const contract = new Contract(PAYROLL_CONTRACT_ADDRESS, artifact.abi, signer);
-
-  const hashes = [];
+  const hashes: string[] = [];
   for (let i = 0; i < paymentCount; i++) {
     try {
       const tx = await contract.executePayment(i);

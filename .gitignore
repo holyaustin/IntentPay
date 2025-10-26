@@ -1,6 +1,7 @@
 # env files
 .env
 /HardhatV3/.env
+/Frontend/.env.local
 
 # Node modules
 /HardhatV3/node_modules
