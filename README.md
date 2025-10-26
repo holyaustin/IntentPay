@@ -73,9 +73,9 @@ Your dApp will be running at:
 | Contract                  | Network        | Address                                      |
 | ------------------------- | -------------- | -------------------------------------------- |
 | `PayrollManager`          | Hedera Testnet | `0x7b954082151F7a44B2E42Ef9225393ea4f16c482` |
-| `PayrollManagerERC20Only` | EVVM Sepolia   | `0xa2aea35523A71Eff81283E32F52151F12D5Cbb7F` |
+| `PayrollManagerHTC`       | Hedera Testnet | `0x49e7127a28c153cc69e196344799e873303a8424` |
 
-
+PayrollManagerHTS deployed at: 0x49e7127a28c153cc69e196344799e873303a8424
 
 # Deployment Examples
 ```bash

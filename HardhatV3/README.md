@@ -81,3 +81,5 @@ npx hardhat verify --network hederaTestnet 0x7b954082151f7a44b2e42ef9225393ea4f1
 PayrollManagerERC20Only deployed at: 0xa2aea35523a71eff81283e32f52151f12d5cbb7f
 
 PayrollManager deployed at: 0x7b954082151f7a44b2e42ef9225393ea4f16c482
+
+PayrollManagerHTS deployed at: 0x49e7127a28c153cc69e196344799e873303a8424

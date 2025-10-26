@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import "../hedera-token-service/HederaTokenService.sol";
-import "../hedera-token-service/HederaResponseCodes.sol";
+import "./hedera-token-service/HederaTokenService.sol";
+import "./HederaResponseCodes.sol";
 
-contract PayrollManager is HederaTokenService {
+/// @title PayrollManager (HBAR + HTS support)
+/// @notice Schedule and execute payments in both HBAR and HTS tokens
+contract PayrollManagerHTS is HederaTokenService {
     address public immutable owner;
     bool public paused;
 
@@ -57,6 +59,8 @@ contract PayrollManager is HederaTokenService {
         isAdmin[msg.sender] = true;
     }
 
+    // ---------------- Admin ----------------
+
     function addAdmin(address _admin) external onlyOwner {
         require(_admin != address(0), "Zero address");
         isAdmin[_admin] = true;
@@ -79,21 +83,16 @@ contract PayrollManager is HederaTokenService {
         emit Unpaused(msg.sender);
     }
 
-    /// @notice Schedule multiple payments (HBAR or HTS). All arrays must match length.
-    /// @dev If token[i] == address(0), msg.value must include the sum of those HBAR amounts.
+    // ---------------- Core: Schedule ----------------
     function schedulePayments(
         address[] calldata _recipients,
         address[] calldata _tokens,
         uint256[] calldata _amounts
     ) external payable whenNotPaused {
         uint256 len = _recipients.length;
-        require(
-            len == _tokens.length && len == _amounts.length,
-            "Array length mismatch"
-        );
         require(len > 0, "No payments");
+        require(len == _tokens.length && len == _amounts.length, "Array length mismatch");
 
-        // Sum HBAR amounts that must be provided with msg.value
         uint256 hbarSum = 0;
         for (uint256 i = 0; i < len; i++) {
             if (_tokens[i] == address(0)) {
@@ -103,36 +102,39 @@ contract PayrollManager is HederaTokenService {
         require(msg.value == hbarSum, "Incorrect HBAR amount");
 
         for (uint256 i = 0; i < len; i++) {
-            require(_recipients[i] != address(0), "Invalid recipient");
-            require(_amounts[i] > 0, "Zero amount");
+            address recipient = _recipients[i];
+            address token = _tokens[i];
+            uint256 amount = _amounts[i];
 
-            // For HTS tokens, transfer from payer to contract
-            if (_tokens[i] != address(0)) {
+            require(recipient != address(0), "Invalid recipient");
+            require(amount > 0, "Zero amount");
+
+            if (token != address(0)) {
+                int64 amt64 = _toI64(amount);
                 int response = HederaTokenService.transferToken(
-                    _tokens[i],
+                    token,
                     msg.sender,
                     address(this),
-                    int64(int256(_amounts[i]))
+                    amt64
                 );
                 require(response == HederaResponseCodes.SUCCESS, "HTS token transfer in failed");
             }
 
-            payments.push(
-                Payment({
-                    payer: msg.sender,
-                    recipient: _recipients[i],
-                    token: _tokens[i],
-                    amount: _amounts[i],
-                    executed: false
-                })
-            );
+            payments.push(Payment({
+                payer: msg.sender,
+                recipient: recipient,
+                token: token,
+                amount: amount,
+                executed: false
+            }));
+
             uint256 newId = payments.length - 1;
-            totalEscrowed += _amounts[i];
-            emit PaymentScheduled(newId, msg.sender, _recipients[i], _amounts[i], _tokens[i]);
+            totalEscrowed += amount;
+            emit PaymentScheduled(newId, msg.sender, recipient, amount, token);
         }
     }
 
-    /// @notice Execute a scheduled payment. ONLY the original payer can execute their own payment.
+    // ---------------- Core: Execute ----------------
     function executePayment(uint256 _id) external whenNotPaused {
         require(_id < payments.length, "Invalid ID");
         Payment storage p = payments[_id];
@@ -143,22 +145,17 @@ contract PayrollManager is HederaTokenService {
         totalEscrowed -= p.amount;
 
         if (p.token == address(0)) {
-            // HBAR transfer using Hedera Token Service
-            AccountAmount[] memory transfers = new AccountAmount[](2);
-            transfers[0] = AccountAmount(address(this), -int64(int256(p.amount)), false);
-            transfers[1] = AccountAmount(p.recipient, int64(int256(p.amount)), false);
-
-            TransferList memory transferList = TransferList(transfers);
-
-            int64 responseCode = HederaTokenService.cryptoTransfer(transferList, new TokenTransferList[](0));
-            require(responseCode == HederaResponseCodes.SUCCESS, "HBAR transfer failed");
+            // Native HBAR transfer
+            (bool sent, ) = payable(p.recipient).call{value: p.amount}("");
+            require(sent, "HBAR transfer failed");
         } else {
-            // HTS token transfer from contract to recipient
+            // HTS token transfer
+            int64 amt64 = _toI64(p.amount);
             int response = HederaTokenService.transferToken(
                 p.token,
                 address(this),
                 p.recipient,
-                int64(int256(p.amount))
+                amt64
             );
             require(response == HederaResponseCodes.SUCCESS, "HTS token transfer out failed");
         }
@@ -166,6 +163,7 @@ contract PayrollManager is HederaTokenService {
         emit PaymentExecuted(_id, p.recipient, p.amount, p.token);
     }
 
+    // ---------------- Views ----------------
     function getPaymentsCount() external view returns (uint256) {
         return payments.length;
     }
@@ -174,13 +172,22 @@ contract PayrollManager is HederaTokenService {
         if (_token == address(0)) {
             return address(this).balance;
         } else {
-            // For HTS tokens, use balanceOfToken
-            (int64 balance, int response) = HederaTokenService.getTokenBalance(_token, address(this));
-            require(response == HederaResponseCodes.SUCCESS, "HTS get balance failed");
-            return uint256(int256(balance));
+            (bool success, bytes memory data) = _token.staticcall(
+                abi.encodeWithSignature("balanceOf(address)", address(this))
+            );
+            require(success && data.length >= 32, "Token balance call failed");
+            return abi.decode(data, (uint256));
         }
     }
 
     // Accept plain HBAR transfers
     receive() external payable {}
+
+    // ---------------- Internal Helper ----------------
+    /// @dev Safe cast to int64
+    function _toI64(uint256 x) internal pure returns (int64) {
+        // Max int64 = 2**63 - 1 = 9223372036854775807
+        require(x <= 9223372036854775807, "cast: > int64.max");
+        return int64(int256(x));
+    }
 }
